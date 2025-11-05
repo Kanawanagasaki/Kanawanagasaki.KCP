@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net9.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<WarningsAsErrors>Nullable</WarningsAsErrors>
+
+		<PackageId>Kanawanagasaki.KCP</PackageId>
+		<Version>1.0.0</Version>
+		<Authors>Kanawanagasaki</Authors>
+		<Description>A transport-agnostic reliable protocol library for .NET.</Description>
+		<PackageProjectUrl>https://github.com/Kanawanagasaki/Kanawanagasaki.KCP</PackageProjectUrl>
+		<RepositoryUrl>https://github.com/Kanawanagasaki/Kanawanagasaki.KCP</RepositoryUrl>
+		<PackageTags>kcp;transport;protocol;udp;reliable;messaging</PackageTags>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<PackageLicenseFile>LICENSE</PackageLicenseFile>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="..\README.md" Pack="true" PackagePath="\" />
+		<None Include="..\LICENSE" Pack="true" PackagePath="\" />
+	</ItemGroup>
+</Project>
