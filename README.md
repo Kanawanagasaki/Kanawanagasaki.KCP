@@ -40,7 +40,7 @@ transport.Write(payload);
 // The UDP transport delivers a datagram containing a KCP-formatted payload
 var datagram = await udpClient.ReceiveAsync();
 // This payload must be fed into the KCP transport's input buffer before the application can read the decoded user data
-await transport.InputAsync(datagram.Buffer);
+transport.Input(datagram.Buffer);
 
 var buffer = await transport.ReadAsync();
 var response = Encoding.UTF8.GetString(buffer.Span);

@@ -9,7 +9,6 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     private readonly Lock _syncLock = new();
 
     private CancellationTokenSource? _cts;
-    private Channel<(ReadOnlyMemory<byte> data, TaskCompletionSource<int> tcs)>? _inputChannel;
     private Channel<ReadOnlyMemory<byte>>? _receiveChannel;
 
     private Task? _processingTask;
@@ -69,21 +68,19 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     /// <param name="data">KCP-formatted packet data</param>
     /// <param name="ct">Cancellation token</param>
     /// <returns>Number of bytes processed</returns>
-    public async ValueTask<int> InputAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+    public void Input(ReadOnlyMemory<byte> data)
     {
         ThrowIfDisposed();
 
         if (data.IsEmpty)
-            return 0;
+            return;
 
-        if (_inputChannel is null)
-            throw new ChannelClosedException();
-
-        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        await _inputChannel.Writer.WriteAsync((data, tcs), ct).ConfigureAwait(false);
-
-        return await tcs.Task.ConfigureAwait(false);
+        lock (_syncLock)
+        {
+            var result = _kcp.Input(data.Span);
+            if (result < 0)
+                throw new KcpException("Operation failed with error code: " + result);
+        }
     }
 
     /// <summary>
@@ -169,12 +166,6 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         _cts?.Dispose();
         _cts = new CancellationTokenSource();
 
-        _inputChannel?.Writer.Complete();
-        _inputChannel = Channel.CreateBounded<(ReadOnlyMemory<byte>, TaskCompletionSource<int>)>(new BoundedChannelOptions(1000)
-        {
-            FullMode = BoundedChannelFullMode.Wait
-        });
-
         _receiveChannel?.Writer.Complete();
         _receiveChannel = Channel.CreateBounded<ReadOnlyMemory<byte>>(new BoundedChannelOptions(1000)
         {
@@ -197,9 +188,6 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         _cts?.Cancel();
         _cts?.Dispose();
         _cts = null;
-
-        _inputChannel?.Writer.Complete();
-        _inputChannel = null;
 
         _receiveChannel?.Writer.Complete();
         _receiveChannel = null;
@@ -396,7 +384,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
             while (_isRunning && _cts is not null && !_cts.Token.IsCancellationRequested)
             {
                 await ProcessOnceAsync(_cts.Token);
-                await Task.Delay(Math.Clamp((int)Interval - 1, 10, 1000), _cts.Token).ConfigureAwait(false);
+                await Task.Delay(Math.Clamp((int)Interval, 10, 1000), _cts.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { }
@@ -408,39 +396,26 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
     private async Task ProcessOnceAsync(CancellationToken ct)
     {
-        while (_inputChannel is not null && _inputChannel.Reader.TryRead(out var item))
-        {
-            var (data, tcs) = item;
-            try
-            {
-                int result;
-                lock (_syncLock)
-                    result = _kcp.Input(data.Span);
-                tcs.SetResult(result);
-            }
-            catch (Exception ex)
-            {
-                tcs.SetException(ex);
-            }
-        }
-
-        var timestamp = (uint)Environment.TickCount;
         lock (_syncLock)
+        {
+            var timestamp = (uint)Environment.TickCount;
             _kcp.Update(timestamp);
+        }
 
         while (true)
         {
             int packetSize;
-            lock (_syncLock)
-                packetSize = _kcp.PeekSize();
-
-            if (packetSize <= 0)
-                break;
-
-            var buffer = new byte[packetSize];
+            byte[] buffer;
             int received;
+
             lock (_syncLock)
+            {
+                packetSize = _kcp.PeekSize();
+                if (packetSize <= 0)
+                    break;
+                buffer = new byte[packetSize];
                 received = _kcp.Recv(buffer);
+            }
 
             if (0 < received)
             {
@@ -471,8 +446,6 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         _cts?.Dispose();
         _cts = null;
 
-        _inputChannel?.Writer.Complete();
-        _inputChannel = null;
         _receiveChannel?.Writer.Complete();
         _receiveChannel = null;
 
@@ -502,8 +475,6 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         _cts?.Dispose();
         _cts = null;
 
-        _inputChannel?.Writer.Complete();
-        _inputChannel = null;
         _receiveChannel?.Writer.Complete();
         _receiveChannel = null;
 

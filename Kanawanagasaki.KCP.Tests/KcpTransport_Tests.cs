@@ -239,11 +239,11 @@ public class KcpTransport_Tests
     {
         using var client1 = new TestTransport(77777, 1.0);
         client1.SetStreamMode(true);
-        client1.SetWindowSize(2048, 2048);
+        client1.SetWindowSize(1024, 1024);
         client1.SetInterval(10);
         using var client2 = new TestTransport(77777, 1.0);
         client2.SetStreamMode(true);
-        client2.SetWindowSize(2048, 2048);
+        client2.SetWindowSize(1024, 1024);
         client2.SetInterval(10);
 
         client1.AnotherTransport = client2;
@@ -275,65 +275,18 @@ public class KcpTransport_Tests
     {
         public TestTransport? AnotherTransport { get; set; }
 
-        protected override async ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+        protected override ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
             if (_successChance <= Random.Shared.NextDouble())
-                return 0;
+                return ValueTask.FromResult(0);
+
             if (AnotherTransport is not null)
-                return await AnotherTransport.InputAsync(data, ct).ConfigureAwait(false);
-            return 0;
-        }
-    }
-
-    class UdpTransport : KcpTransport
-    {
-        private readonly UdpClient _udpClient;
-
-        public UdpTransport(UdpClient udpClient, uint conversationId) : base(conversationId)
-        {
-            _udpClient = udpClient;
-        }
-
-        protected override async ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
-        {
-            return await _udpClient.SendAsync(data, ct);
-        }
-    }
-
-    internal async Task meow()
-    {
-        using var udpClient = new UdpClient();
-        udpClient.Connect(IPAddress.Loopback, 34343);
-
-        using var transport = new UdpTransport(udpClient, 1);
-        transport.SetStreamMode(true);
-        transport.Start();
-
-        var cts = new CancellationTokenSource();
-        var datagramTask = Task.Run(async () =>
-        {
-            try
             {
-                var datagram = await udpClient.ReceiveAsync(cts.Token);
-                await transport.InputAsync(datagram.Buffer, cts.Token);
+                AnotherTransport.Input(data);
+                return ValueTask.FromResult(data.Length);
             }
-            catch (OperationCanceledException) { }
-        });
 
-        var stream = transport.GetStream();
-
-        var helloWorld = Encoding.UTF8.GetBytes("Hello, world!");
-        await stream.WriteAsync(helloWorld);
-
-        var buffer = new byte[1024];
-        var bytesRead = await stream.ReadAsync(buffer);
-        var text = Encoding.UTF8.GetString(buffer);
-        Console.WriteLine(text);
-
-        cts.Cancel();
-        await datagramTask;
-
-        await transport.StopAsync();
-        udpClient.Close();
+            return ValueTask.FromResult(0);
+        }
     }
 }
