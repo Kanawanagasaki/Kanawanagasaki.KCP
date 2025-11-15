@@ -50,7 +50,8 @@ public class KcpConsumerProducerStream : Stream
             var threeQuarters = Math.Ceiling(_transport.SendWindow / 4.0 * 3.0);
             if (threeQuarters <= _transport.GetWaitSnd())
             {
-                await Task.Delay(Math.Clamp((int)_transport.Interval, 10, 1000), ct);
+                _transport.Flush();
+                await Task.Delay(Math.Clamp((int)_transport.Interval / 2, 5, 1000), ct);
             }
             else
             {
@@ -63,6 +64,8 @@ public class KcpConsumerProducerStream : Stream
                 offset += toCopy;
             }
         }
+
+        _transport.Flush();
     }
 
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct = default)

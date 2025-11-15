@@ -1,11 +1,5 @@
 ﻿namespace Kanawanagasaki.KCP.Tests;
-
-using Microsoft.VisualStudio.TestPlatform.CommunicationUtilities.Interfaces;
-using Microsoft.VisualStudio.TestPlatform.ObjectModel;
 using System;
-using System.Buffers.Binary;
-using System.Net;
-using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -257,6 +251,52 @@ public class KcpTransport_Tests
 
         var stream = client1.GetStream();
         var writeTask = stream.WriteAsync(testData);
+
+        var receiveStream = client2.GetStream();
+        var buffer = new byte[testData.Length];
+        var receiveTask = receiveStream.ReadExactlyAsync(buffer);
+
+        await writeTask;
+        await receiveTask;
+
+        Assert.Equal(testData, buffer);
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task LargeStreamingDataSmallChunks()
+    {
+        using var client1 = new TestTransport(88888, 1.0);
+        client1.SetStreamMode(true);
+        client1.SetWindowSize(1024, 1024);
+        client1.SetInterval(10);
+        using var client2 = new TestTransport(88888, 1.0);
+        client2.SetStreamMode(true);
+        client2.SetWindowSize(1024, 1024);
+        client2.SetInterval(10);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        var testData = new byte[32 * 1024 * 1024];
+        Random.Shared.NextBytes(testData);
+
+        var stream = client1.GetStream();
+        var writeTask = Task.Run(async () =>
+        {
+            int offset = 0;
+            while (offset < testData.Length)
+            {
+                var len = Math.Min(1024, testData.Length - offset);
+                await stream.WriteAsync(testData.AsMemory(offset, len));
+                offset += len;
+            }
+        });
 
         var receiveStream = client2.GetStream();
         var buffer = new byte[testData.Length];
