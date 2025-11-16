@@ -19,7 +19,7 @@ internal static class KcpConstants
     internal const uint IKCP_INTERVAL = 100;
     internal const uint IKCP_OVERHEAD = 24;
     internal const uint IKCP_DEADLINK = 20;
-    internal const uint IKCP_THRESH_INIT = 32;
+    internal const uint IKCP_THRESH_INIT = 128;
     internal const uint IKCP_THRESH_MIN = 2;
     internal const uint IKCP_PROBE_INIT = 7000;
     internal const uint IKCP_PROBE_LIMIT = 120000;

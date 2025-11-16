@@ -270,12 +270,12 @@ public class KcpTransport_Tests
     {
         using var client1 = new TestTransport(88888, 1.0);
         client1.SetStreamMode(true);
-        client1.SetWindowSize(1024, 1024);
-        client1.SetInterval(10);
+        client1.SetWindowSize(2048, 2048);
+        client1.SetInterval(25);
         using var client2 = new TestTransport(88888, 1.0);
         client2.SetStreamMode(true);
-        client2.SetWindowSize(1024, 1024);
-        client2.SetInterval(10);
+        client2.SetWindowSize(2048, 2048);
+        client2.SetInterval(25);
 
         client1.AnotherTransport = client2;
         client2.AnotherTransport = client1;
