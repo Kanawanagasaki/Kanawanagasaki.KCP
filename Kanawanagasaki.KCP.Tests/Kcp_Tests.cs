@@ -9,7 +9,7 @@ public class Kcp_Tests
     public void GetConvFromBytes()
     {
         var header = new byte[24];
-        BinaryPrimitives.WriteUInt32BigEndian(header, 12345u);
+        BinaryPrimitives.WriteUInt32LittleEndian(header, 12345u);
 
         var conv = KcpConversation.GetConvFromBytes(header);
 

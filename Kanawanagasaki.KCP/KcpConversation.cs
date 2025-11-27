@@ -282,9 +282,9 @@ public unsafe class KcpConversation : IDisposable
         return SetWndSizeInternal(sndwnd, rcvwnd);
     }
 
-    public int WaitSnd()
+    public uint WaitSnd()
     {
-        return (int)(kcp->nsnd_buf + kcp->nsnd_que);
+        return kcp->nsnd_buf + kcp->nsnd_que;
     }
 
     public int SetNoDelay(int nodelay, int interval, int resend, int nc)
@@ -358,18 +358,16 @@ public unsafe class KcpConversation : IDisposable
                     seg->conv = kcp->conv;
                     seg->cmd = KcpConstants.IKCP_CMD_PUSH;
                     seg->frg = 0;
-                    seg->wnd = old->wnd;
-                    seg->ts = kcp->current;
-                    seg->sn = old->sn;
-                    seg->una = kcp->rcv_nxt;
+                    seg->wnd = 0;
+                    seg->ts = 0;
+                    seg->sn = 0;
+                    seg->una = 0;
                     seg->resendts = 0;
                     seg->rto = 0;
                     seg->fastack = 0;
                     seg->xmit = 0;
 
                     QueueAddTail(&seg->node, &kcp->snd_queue);
-                    kcp->nsnd_que++;
-
                     QueueDel(&old->node);
                     FreeSegment(old);
 
@@ -385,7 +383,7 @@ public unsafe class KcpConversation : IDisposable
 
         int count = (len <= (int)kcp->mss) ? 1 : (len + (int)kcp->mss - 1) / (int)kcp->mss;
 
-        if ((int)KcpConstants.IKCP_WND_RCV < count)
+        if (count >= (int)KcpConstants.IKCP_WND_RCV)
         {
             if (kcp->stream != 0 && 0 < sent)
                 return sent;
@@ -452,6 +450,10 @@ public unsafe class KcpConversation : IDisposable
         if (peeksize < 0) return -2;
         if (peeksize > len) return -3;
 
+        bool recover = false;
+        if (kcp->nrcv_que >= kcp->rcv_wnd)
+            recover = true;
+
         int receiveLen = 0;
         int offset = 0;
         IQueueHead* p = kcp->rcv_queue.next;
@@ -492,6 +494,9 @@ public unsafe class KcpConversation : IDisposable
             else
                 break;
         }
+
+        if (kcp->nrcv_que < kcp->rcv_wnd && recover)
+            kcp->probe |= KcpConstants.IKCP_ASK_TELL;
 
         return receiveLen;
     }
@@ -618,8 +623,8 @@ public unsafe class KcpConversation : IDisposable
                 {
                     if (TimeDiff(sn, maxack) > 0)
                     {
-                        maxack = sn;
-                        latest_ts = ts;
+                            maxack = sn;
+                            latest_ts = ts;
                     }
                 }
             }
@@ -1250,7 +1255,7 @@ public unsafe class KcpConversation : IDisposable
             }
             else if (sn != seg->sn)
             {
-                seg->fastack++;
+                    seg->fastack++;
             }
         }
     }
@@ -1288,49 +1293,41 @@ public unsafe class KcpConversation : IDisposable
 
     private static byte* Encode16u(byte* p, ushort w)
     {
-        p[0] = (byte)(w >> 8);
-        p[1] = (byte)(w & 0xFF);
+        p[0] = (byte)(w & 0xFF);
+        p[1] = (byte)(w >> 8);
         return p + 2;
     }
 
     private static byte* Decode16u(byte* p, ushort* w)
     {
-        *w = (ushort)((p[0] << 8) | p[1]);
+        *w = (ushort)(p[0] | (p[1] << 8));
         return p + 2;
     }
 
     private static ReadOnlySpan<byte> Decode16u(ReadOnlySpan<byte> p, ushort* w)
     {
-        *w = (ushort)((p[0] << 8) | p[1]);
+        *w = (ushort)(p[0] | (p[1] << 8));
         return p.Slice(2);
     }
 
     private static byte* Encode32u(byte* p, uint l)
     {
-        p[0] = (byte)((l >> 24) & 0xff);
-        p[1] = (byte)((l >> 16) & 0xff);
-        p[2] = (byte)((l >> 8) & 0xff);
-        p[3] = (byte)(l & 0xff);
+        p[0] = (byte)(l & 0xFF);
+        p[1] = (byte)(l >> 8);
+        p[2] = (byte)(l >> 16);
+        p[3] = (byte)(l >> 24);
         return p + 4;
     }
 
     private static byte* Decode32u(byte* p, uint* l)
     {
-        uint val = ((uint)p[0] << 24) |
-                   ((uint)p[1] << 16) |
-                   ((uint)p[2] << 8) |
-                   ((uint)p[3]);
-        if (l != null) *l = val;
+        *l = (uint)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
         return p + 4;
     }
 
     private static ReadOnlySpan<byte> Decode32u(ReadOnlySpan<byte> p, uint* l)
     {
-        uint val = ((uint)p[0] << 24) |
-                   ((uint)p[1] << 16) |
-                   ((uint)p[2] << 8) |
-                   ((uint)p[3]);
-        if (l != null) *l = val;
+        *l = (uint)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
         return p.Slice(4);
     }
 

@@ -1,11 +1,11 @@
 ﻿namespace Kanawanagasaki.KCP;
 
+using System.Buffers;
 using System.Threading.Channels;
 
 public abstract class KcpTransport : IAsyncDisposable, IDisposable
 {
     private readonly KcpConversation _kcp;
-    private readonly SemaphoreSlim _sendSemaphore = new(1, 1);
     private readonly Lock _syncLock = new();
 
     private CancellationTokenSource? _cts;
@@ -148,6 +148,23 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
+    /// Calculates the amount of remaining free space in the send window, expressed in bytes,
+    /// based on the current MTU and number of unacknowledged packets in flight.
+    /// </summary>
+    /// <returns>
+    /// The number of bytes that can still be queued for sending without exceeding the send window,
+    /// or 0 if the window is currently full.
+    /// </returns>
+    public int GetFreeSendWindowBytes()
+    {
+        var mss = Mtu - KcpConstants.IKCP_OVERHEAD;
+        var freeSlots = (int)SendWindow - (int)GetWaitSnd();
+        if (freeSlots <= 0)
+            return 0;
+        return freeSlots * (int)mss;
+    }
+
+    /// <summary>
     /// Starts the KCP processing background task.
     /// Must be called before sending/receiving data.
     /// </summary>
@@ -210,7 +227,9 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     {
         _kcp.SetOutput((data, kcp, user) =>
         {
-            var memory = data.ToArray().AsMemory();
+            var buffer = ArrayPool<byte>.Shared.Rent(data.Length);
+            var memory = buffer.AsMemory(0, data.Length);
+            data.CopyTo(memory.Span);
 
             _ = Task.Run(async () =>
             {
@@ -221,6 +240,10 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
                 catch (Exception e)
                 {
                     OnLogMessage?.Invoke($"Packet send failed: {e.Message}");
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
                 }
             }, _cts?.Token ?? default);
 
@@ -248,7 +271,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     /// Gets count of unacknowledged packets in send queue.
     /// </summary>
     /// <returns>Number of pending packets</returns>
-    public int GetWaitSnd()
+    public uint GetWaitSnd()
     {
         ThrowIfDisposed();
         return _kcp.WaitSnd();
@@ -455,9 +478,9 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         }
         catch (OperationCanceledException) { }
 
-        _kcp?.Dispose();
+        lock (_syncLock)
+            _kcp?.Dispose();
         _cts?.Dispose();
-        _sendSemaphore?.Dispose();
 
         GC.SuppressFinalize(this);
     }
@@ -487,9 +510,9 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
             catch { }
         }
 
-        _kcp?.Dispose();
+        lock (_syncLock)
+            _kcp?.Dispose();
         _cts?.Dispose();
-        _sendSemaphore?.Dispose();
 
         GC.SuppressFinalize(this);
     }

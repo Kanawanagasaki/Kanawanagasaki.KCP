@@ -311,6 +311,43 @@ public class KcpTransport_Tests
         await client2.StopAsync();
     }
 
+    [Fact]
+    public async Task LargeStreamingData_LossyNetwork_NoCongestion()
+    {
+        using var client1 = new TestTransport(77777, 0.8);
+        client1.SetStreamMode(true);
+        client1.SetWindowSize(1024, 1024);
+        client1.SetNoDelay(true, 10, 0, true);
+        using var client2 = new TestTransport(77777, 0.8);
+        client2.SetStreamMode(true);
+        client2.SetWindowSize(1024, 1024);
+        client2.SetNoDelay(true, 10, 0, true);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        var testData = new byte[32 * 1024 * 1024];
+        Random.Shared.NextBytes(testData);
+
+        var stream = client1.GetStream();
+        var writeTask = stream.WriteAsync(testData);
+
+        var receiveStream = client2.GetStream();
+        var buffer = new byte[testData.Length];
+        var receiveTask = receiveStream.ReadExactlyAsync(buffer);
+
+        await writeTask;
+        await receiveTask;
+
+        Assert.Equal(testData, buffer);
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
     public class TestTransport(uint conv, double _successChance) : KcpTransport(conv)
     {
         public TestTransport? AnotherTransport { get; set; }

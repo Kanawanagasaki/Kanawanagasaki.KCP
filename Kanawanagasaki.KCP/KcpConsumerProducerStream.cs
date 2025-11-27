@@ -163,12 +163,19 @@ public class KcpConsumerProducerStream : Stream
         if (count == 0)
             return;
 
-        int result = _transport.Write(buffer.AsMemory(offset, count));
+        count = Math.Min(count, buffer.Length);
 
-        if (result < 0)
-            throw new IOException($"KCP write failed with error code {result}");
-        if (result != buffer.Length)
-            throw new IOException("Partial writes not supported in stream mode");
+        if(_transport.GetFreeSendWindowBytes() < count)
+            throw new SendWindowExceededException("Write failed, send window is full");
+
+        var span = buffer.AsMemory(offset, count);
+        while (!span.IsEmpty)
+        {
+            int result = _transport.Write(span);
+            if (result < 0)
+                throw new IOException($"KCP write failed with error code {result}");
+            span = span.Slice(result);
+        }
     }
 
     public override int Read(byte[] buffer, int offset, int count)
