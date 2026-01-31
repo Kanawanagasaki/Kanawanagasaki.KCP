@@ -1,11 +1,13 @@
 ﻿namespace Kanawanagasaki.KCP;
 
 using System.Buffers;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading.Channels;
 
 public abstract class KcpTransport : IAsyncDisposable, IDisposable
 {
-    private readonly KcpConversation _kcp;
+    private readonly KcpManaged _kcp;
     private readonly Lock _syncLock = new();
 
     private CancellationTokenSource? _cts;
@@ -25,15 +27,29 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     /// <summary>
     /// Unique conversation ID for this KCP session.
     /// </summary>
-    public uint ConversationId => _kcp.Conv;
+    public uint ConversationId
+        => _kcp.ConversationId;
 
-    public bool NoDelay => _kcp.NoDelay != 0;
-    public uint Interval => _kcp.Interval;
-    public uint SendWindow => _kcp.SendWindow;
-    public uint ReceiveWindow => _kcp.ReceiveWindow;
-    public uint RemoteWindow => _kcp.RemoteWindow;
-    public uint Mtu => _kcp.Mtu;
-    public bool IsStreamMode => 0 < _kcp.StreamMode;
+    public bool NoDelay
+        => _kcp.NoDelay;
+
+    public uint Interval
+        => _kcp.Interval;
+
+    public uint SendWindow
+        => _kcp.SendWindow;
+
+    public uint ReceiveWindow
+        => _kcp.ReceiveWindow;
+
+    public uint RemoteWindow
+        => _kcp.RemoteWindow;
+
+    public uint Mtu
+        => _kcp.Mtu;
+
+    public bool IsStreamMode
+        => _kcp.IsStreamMode;
 
     /// <summary>
     /// Indicates if the transport is actively processing data.
@@ -47,9 +63,38 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     /// <param name="conversationId">Unique session identifier</param>
     protected KcpTransport(uint conversationId)
     {
-        _kcp = new KcpConversation(conversationId);
+        _kcp = new KcpManaged(conversationId);
+        _kcp.OnOutput = OnOutput;
+        _kcp.OnLog = msg => OnLogMessage?.Invoke(msg);
         _stream = new KcpConsumerProducerStream(this);
-        ConfigureOutput();
+    }
+
+    private int OnOutput(ReadOnlySpan<byte> data)
+    {
+        if (_disposed || _cts?.IsCancellationRequested != false)
+            return -1;
+
+        var buffer = ArrayPool<byte>.Shared.Rent(data.Length);
+        data.CopyTo(buffer);
+        var memory = buffer.AsMemory(0, data.Length);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await SendAsync(memory, _cts?.Token ?? default).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                OnLogMessage?.Invoke($"Packet send failed: {e.Message}");
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }, _cts?.Token ?? default);
+
+        return data.Length;
     }
 
     /// <summary>
@@ -66,7 +111,6 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     /// This should be called by the transport when data is received.
     /// </summary>
     /// <param name="data">KCP-formatted packet data</param>
-    /// <param name="ct">Cancellation token</param>
     /// <returns>Number of bytes processed</returns>
     public void Input(ReadOnlyMemory<byte> data)
     {
@@ -98,7 +142,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         {
             ThrowIfDisposed();
 
-            if ((int)_kcp.SendWindow <= _kcp.WaitSnd())
+            if ((int)_kcp.SendWindow <= _kcp.WaitSend())
                 throw new SendWindowExceededException("Write failed, send window is full");
 
             var sendRes = _kcp.Send(data.Span);
@@ -122,11 +166,11 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     {
         ThrowIfDisposed();
 
-        if (IsStreamMode)
+        if (_kcp.IsStreamMode)
             throw new InvalidOperationException("In stream mode, obtain the stream using GetStream() and read data from it");
 
         if (_receiveChannel is null)
-            return Array.Empty<byte>();
+            return Memory<byte>.Empty;
 
         return await _receiveChannel.Reader.ReadAsync(ct).ConfigureAwait(false);
     }
@@ -223,39 +267,6 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         }
     }
 
-    private void ConfigureOutput()
-    {
-        _kcp.SetOutput((data, kcp, user) =>
-        {
-            var buffer = ArrayPool<byte>.Shared.Rent(data.Length);
-            var memory = buffer.AsMemory(0, data.Length);
-            data.CopyTo(memory.Span);
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await SendAsync(memory, _cts?.Token ?? default).ConfigureAwait(false);
-                }
-                catch (Exception e)
-                {
-                    OnLogMessage?.Invoke($"Packet send failed: {e.Message}");
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(buffer);
-                }
-            }, _cts?.Token ?? default);
-
-            return memory.Length;
-        });
-
-        _kcp.SetWriteLog((log, kcp, user) =>
-        {
-            OnLogMessage?.Invoke(log);
-        });
-    }
-
     /// <summary>
     /// Immediately flushes all pending send packets.
     /// </summary>
@@ -274,7 +285,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     public uint GetWaitSnd()
     {
         ThrowIfDisposed();
-        return _kcp.WaitSnd();
+        return (uint)_kcp.WaitSend();
     }
 
     /// <summary>
@@ -312,7 +323,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         ThrowIfDisposed();
 
         lock (_syncLock)
-            _kcp.SetNoDelay(noDelay ? 1 : 0, intervalMs, fastResend, noCongestionControl ? 1 : 0);
+            _kcp.SetNoDelay(noDelay, intervalMs, fastResend, noCongestionControl);
     }
 
     /// <summary>
@@ -334,7 +345,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         ThrowIfDisposed();
 
         lock (_syncLock)
-            _kcp.SetWndSize(sendWindow, receiveWindow);
+            _kcp.SetWindowSize(sendWindow, receiveWindow);
     }
 
     /// <summary>
@@ -380,7 +391,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         ThrowIfDisposed();
 
         lock (_syncLock)
-            _kcp.SetStreamMode(enable);
+            _kcp.IsStreamMode = enable;
     }
 
     /// <summary>
@@ -437,15 +448,15 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
                 if (packetSize <= 0)
                     break;
                 buffer = new byte[packetSize];
-                received = _kcp.Recv(buffer);
+                received = _kcp.Receive(buffer);
             }
 
             if (0 < received)
             {
-                if (_kcp.StreamMode == 0)
-                    _receiveChannel?.Writer.TryWrite(buffer.AsMemory(0, received));
-                else
+                if (_kcp.IsStreamMode)
                     await _stream.WriteReceivedDataAsync(buffer.AsMemory(0, received), ct);
+                else
+                    _receiveChannel?.Writer.TryWrite(buffer.AsMemory(0, received));
             }
         }
     }
@@ -456,21 +467,16 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
             throw new ObjectDisposedException(nameof(KcpTransport));
     }
 
-    public void Dispose()
+    public virtual void Dispose()
     {
         if (_disposed)
             return;
 
         _disposed = true;
 
-        _stream.Dispose();
-
         _cts?.Cancel();
-        _cts?.Dispose();
-        _cts = null;
 
-        _receiveChannel?.Writer.Complete();
-        _receiveChannel = null;
+        _stream.Dispose();
 
         try
         {
@@ -478,29 +484,28 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         }
         catch (OperationCanceledException) { }
 
+        _receiveChannel?.Writer.Complete();
+        _receiveChannel = null;
+
         lock (_syncLock)
             _kcp?.Dispose();
+
         _cts?.Dispose();
+        _cts = null;
 
         GC.SuppressFinalize(this);
     }
 
-    public async ValueTask DisposeAsync()
+    public virtual async ValueTask DisposeAsync()
     {
         if (_disposed)
             return;
 
         _disposed = true;
 
-        await _stream.DisposeAsync();
-
         _cts?.Cancel();
-        _cts?.Dispose();
-        _cts = null;
 
-        _receiveChannel?.Writer.Complete();
-        _receiveChannel = null;
-
+        await _stream.DisposeAsync();
         if (_processingTask != null)
         {
             try
@@ -510,9 +515,14 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
             catch { }
         }
 
+        _receiveChannel?.Writer.Complete();
+        _receiveChannel = null;
+
         lock (_syncLock)
             _kcp?.Dispose();
+
         _cts?.Dispose();
+        _cts = null;
 
         GC.SuppressFinalize(this);
     }

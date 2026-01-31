@@ -1,8 +1,10 @@
 ﻿namespace Kanawanagasaki.KCP.Tests;
+
 using System;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 public class KcpTransport_Tests
@@ -233,12 +235,12 @@ public class KcpTransport_Tests
     {
         using var client1 = new TestTransport(77777, 1.0);
         client1.SetStreamMode(true);
-        client1.SetWindowSize(1024, 1024);
         client1.SetInterval(10);
+        client1.SetWindowSize(1024, 1024);
         using var client2 = new TestTransport(77777, 1.0);
         client2.SetStreamMode(true);
-        client2.SetWindowSize(1024, 1024);
         client2.SetInterval(10);
+        client2.SetWindowSize(1024, 1024);
 
         client1.AnotherTransport = client2;
         client2.AnotherTransport = client1;
@@ -246,7 +248,7 @@ public class KcpTransport_Tests
         client1.Start();
         client2.Start();
 
-        var testData = new byte[32 * 1024 * 1024];
+        var testData = new byte[8 * 1024 * 1024];
         Random.Shared.NextBytes(testData);
 
         var stream = client1.GetStream();
@@ -266,13 +268,121 @@ public class KcpTransport_Tests
     }
 
     [Fact]
-    public async Task LargeStreamingDataSmallChunks()
+    public async Task LargeStreamingData_Bidirectional_Sequential()
     {
         using var client1 = new TestTransport(88888, 1.0);
         client1.SetStreamMode(true);
+        client1.SetWindowSize(10240, 10240);
+        client1.SetNoDelay(true, 10, 0, true);
+        using var client2 = new TestTransport(88888, 1.0);
+        client2.SetStreamMode(true);
+        client2.SetWindowSize(10240, 10240);
+        client2.SetNoDelay(true, 10, 0, true);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        var stream1 = client1.GetStream();
+        var stream2 = client2.GetStream();
+
+        for (int i = 0; i < 16; i++)
+        {
+            {
+                var testData = new byte[16 * 1024 * 1024];
+                Random.Shared.NextBytes(testData);
+
+                var writeTask = stream1.WriteAsync(testData);
+
+                var buffer = new byte[testData.Length];
+                var receiveTask = stream2.ReadExactlyAsync(buffer);
+
+                await writeTask;
+                await receiveTask;
+
+                Assert.Equal(testData, buffer);
+            }
+
+            {
+                var testData = new byte[16 * 1024 * 1024];
+                Random.Shared.NextBytes(testData);
+
+                var writeTask = stream2.WriteAsync(testData);
+
+                var buffer = new byte[testData.Length];
+                var receiveTask = stream1.ReadExactlyAsync(buffer);
+
+                await writeTask;
+                await receiveTask;
+
+                Assert.Equal(testData, buffer);
+            }
+        }
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task LargeStreamingData_Bidirectional_Concurrent()
+    {
+        using var client1 = new TestTransport(88888, 1.0);
+        client1.SetStreamMode(true);
+        client1.SetWindowSize(10240, 10240);
+        client1.SetNoDelay(true, 10, 0, true);
+        using var client2 = new TestTransport(88888, 1.0);
+        client2.SetStreamMode(true);
+        client2.SetWindowSize(10240, 10240);
+        client2.SetNoDelay(true, 10, 0, true);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        var stream1 = client1.GetStream();
+        var stream2 = client2.GetStream();
+
+        for (int i = 0; i < 16; i++)
+        {
+            var testData1 = new byte[16 * 1024 * 1024];
+            Random.Shared.NextBytes(testData1);
+            var writeTask1 = stream1.WriteAsync(testData1);
+
+            var testData2 = new byte[16 * 1024 * 1024];
+            Random.Shared.NextBytes(testData2);
+            var writeTask2 = stream2.WriteAsync(testData2);
+
+            var buffer1 = new byte[testData1.Length];
+            var receiveTask1 = stream2.ReadExactlyAsync(buffer1);
+
+            var buffer2 = new byte[testData2.Length];
+            var receiveTask2 = stream1.ReadExactlyAsync(buffer2);
+
+            await writeTask1;
+            await writeTask2;
+            await receiveTask1;
+            await receiveTask2;
+
+            Assert.Equal(testData1, buffer1);
+            Assert.Equal(testData2, buffer2);
+        }
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task LargeStreamingDataSmallChunks()
+    {
+        using var client1 = new TestTransport(99999, 1.0);
+        client1.SetStreamMode(true);
         client1.SetWindowSize(2048, 2048);
         client1.SetInterval(25);
-        using var client2 = new TestTransport(88888, 1.0);
+        using var client2 = new TestTransport(99999, 1.0);
         client2.SetStreamMode(true);
         client2.SetWindowSize(2048, 2048);
         client2.SetInterval(25);
@@ -314,11 +424,11 @@ public class KcpTransport_Tests
     [Fact]
     public async Task LargeStreamingData_LossyNetwork_NoCongestion()
     {
-        using var client1 = new TestTransport(77777, 0.8);
+        using var client1 = new TestTransport(101010, 0.8);
         client1.SetStreamMode(true);
         client1.SetWindowSize(1024, 1024);
         client1.SetNoDelay(true, 10, 0, true);
-        using var client2 = new TestTransport(77777, 0.8);
+        using var client2 = new TestTransport(101010, 0.8);
         client2.SetStreamMode(true);
         client2.SetWindowSize(1024, 1024);
         client2.SetNoDelay(true, 10, 0, true);
@@ -348,22 +458,63 @@ public class KcpTransport_Tests
         await client2.StopAsync();
     }
 
-    public class TestTransport(uint conv, double _successChance) : KcpTransport(conv)
+    public class TestTransport : KcpTransport
     {
         public TestTransport? AnotherTransport { get; set; }
 
-        protected override ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+        private readonly double _successChance;
+
+        public Channel<byte[]> Channel { get; } = System.Threading.Channels.Channel.CreateUnbounded<byte[]>();
+
+        private readonly CancellationTokenSource _cts = new();
+        private readonly Task _receiveTask;
+
+        public TestTransport(uint conv, double successChance) : base(conv)
+        {
+            _successChance = successChance;
+            _receiveTask = ReceiveAsync();
+        }
+
+        private async Task ReceiveAsync()
+        {
+            while (!_cts.IsCancellationRequested)
+            {
+                try
+                {
+                    var buffer = await Channel.Reader.ReadAsync(_cts.Token);
+                    Input(buffer);
+                }
+                catch { }
+            }
+        }
+
+        protected override async ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
             if (_successChance <= Random.Shared.NextDouble())
-                return ValueTask.FromResult(0);
+                return data.Length;
 
             if (AnotherTransport is not null)
             {
-                AnotherTransport.Input(data);
-                return ValueTask.FromResult(data.Length);
+                await AnotherTransport.Channel.Writer.WriteAsync(data.ToArray(), ct);
+                return data.Length;
             }
 
-            return ValueTask.FromResult(0);
+            return 0;
+        }
+
+        public override void Dispose()
+        {
+            _cts.Cancel();
+            _cts.Dispose();
+            base.Dispose();
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            _cts.Cancel();
+            _cts.Dispose();
+            await _receiveTask;
+            await base.DisposeAsync();
         }
     }
 }

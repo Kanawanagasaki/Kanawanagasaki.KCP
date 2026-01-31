@@ -3,7 +3,7 @@
 using System.Runtime.InteropServices;
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct IKCPSeg
+internal unsafe struct IKCPSEG
 {
     internal IQueueHead node;
     internal uint conv;
@@ -18,5 +18,4 @@ internal unsafe struct IKCPSeg
     internal uint rto;
     internal uint fastack;
     internal uint xmit;
-    internal fixed byte data[1];
 }

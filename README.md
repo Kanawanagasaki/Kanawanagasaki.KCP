@@ -8,7 +8,9 @@ A transport-agnostic reliable protocol library for .NET. Ported from [https://gi
 
 KCP is a fast, lightweight ARQ (Automatic Repeat reQuest) protocol that runs over unreliable transports like UDP.
 
-## UDP example
+## KcpTransport
+
+For most applications, use the `KcpTransport` abstraction:
 
 ```csharp
 using Kanawanagasaki.KCP;
@@ -48,6 +50,40 @@ Console.WriteLine(response);
 
 await transport.StopAsync();
 udpClient.Close();
+```
+
+## KcpManaged
+
+`KcpManaged` provides a managed, disposable wrapper around the native KCP protocol implementation. It offers a middle-ground API between the high-level KcpTransport and the raw unsafe pointers.
+
+```csharp
+using Kanawanagasaki.KCP;
+
+using var kcp = new KcpManaged(12345);
+
+// Configure output callback - called when KCP has packets ready to send
+kcp.OnOutput = (data) =>
+{
+    udpClient.Send(data);
+    return data.Length;
+};
+
+kcp.SetNoDelay(nodelay: true, interval: 10, resend: 2, noCongestionWindow: false);
+kcp.SetWindowSize(sndwnd: 128, rcvwnd: 128);
+kcp.SetMtu(1400);
+
+var message = Encoding.UTF8.GetBytes("Hello, World!");
+int sent = kcp.Send(message);
+
+kcp.Input(receivedPacketSpan);
+kcp.Update((uint)Environment.TickCount);
+
+var buffer = new byte[4096];
+int received = kcp.Receive(buffer);
+if (received > 0)
+{
+    var data = buffer[..received];
+}
 ```
 
 ## Configuration Settings
@@ -118,44 +154,94 @@ Stream mode is recommended for continuous data transfer operations where message
 
 ## Low-Level API
 
-### KcpConversation Interface
+### KCP Interface
 
-Direct protocol manipulation available through `KcpConversation`:
+This API uses unmanaged memory and requires unsafe context. You must manually ensure thread safety and proper memory cleanup to avoid leaks or corruption.
 
 ```csharp
 using Kanawanagasaki.KCP;
+using System.Runtime.InteropServices;
 
-using var kcp = new KcpConversation(34343);
+// Create KCP control block (IKCPCB)
+uint conversationId = 12345;
+IKCPCB* kcp = KCP.ikcp_create(conversationId, userData: null);
 
-kcp.SetOutput((data, kcpPtr, userPtr) =>
+if (kcp == null)
+    throw new OutOfMemoryException("Failed to create KCP instance");
+
+try
 {
-    // Implement transmission logic
-    return data.Length;
-});
+    // Set output callback using unmanaged function pointer
+    KCP.ikcp_setoutput(kcp, &MyOutputCallback);
+    
+    // Optional: Set logging callback
+    kcp->writelog = &MyLogCallback;
+    kcp->logmask = KcpConstants.IKCP_LOG_OUTPUT | KcpConstants.IKCP_LOG_INPUT;
 
-// Configure protocol parameters
-kcp.SetNoDelay(1, 10, 2, 1);
-kcp.SetWndSize(32, 32);
-kcp.SetMtu(1400);
-kcp.SetStreamMode(false);
+    // Configure protocol
+    KCP.ikcp_nodelay(kcp, nodelay: 1, interval: 10, resend: 2, nc: 0);
+    KCP.ikcp_wndsize(kcp, sndwnd: 128, rcvwnd: 128);
+    KCP.ikcp_setmtu(kcp, mtu: 1400);
 
-// Send operation
-var message = Encoding.UTF8.GetBytes("Protocol data");
-int sent = kcp.Send(message);
+    // Send data
+    byte[] message = Encoding.UTF8.GetBytes("Protocol data");
+    fixed (byte* ptr = message)
+    {
+        int sent = KCP.ikcp_send(kcp, ptr, message.Length);
+        if (sent < 0) throw new InvalidOperationException($"Send failed: {sent}");
+    }
 
-// Receive operation
-var receiveBuffer = new byte[1024];
-int received = kcp.Recv(receiveBuffer);
-
-if (0 < received)
+    // Main loop - call Update regularly
+    while (true)
+    {
+        uint current = (uint)Environment.TickCount;
+        KCP.ikcp_update(kcp, current);
+        
+        // Check when next update is needed (for sleep/timer optimization)
+        uint nextUpdate = KCP.ikcp_check(kcp, current);
+        int sleepMs = (int)(nextUpdate - current);
+        if (sleepMs > 0)
+            Thread.Sleep(Math.Min(sleepMs, 100));
+        
+        // Process incoming packets from network
+        if (packetReceived)
+        {
+            fixed (byte* packetPtr = receivedPacket)
+            {
+                int result = KCP.ikcp_input(kcp, packetPtr, receivedPacket.Length);
+                if (result < 0) 
+                    Console.WriteLine($"Input error: {result}");
+            }
+        }
+        
+        // Receive decoded data
+        byte* recvBuffer = stackalloc byte[4096];
+        int received = KCP.ikcp_recv(kcp, recvBuffer, 4096);
+        if (received > 0)
+        {
+            // Process received data
+            ProcessData(recvBuffer, received);
+        }
+    }
+}
+finally
 {
-    var data = Encoding.UTF8.GetString(receiveBuffer[..received]);
+    // Release native memory
+    KCP.ikcp_release(kcp);
 }
 
-// Protocol state maintenance
-uint timestamp = (uint)Environment.TickCount;
-kcp.Update(timestamp);
+[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+private static int MyOutputCallback(byte* data, int size, IKCPCB* kcp, void* user)
+{
+    var span = new ReadOnlySpan<byte>(data, size);
+    UdpSend(span);
+    return size;
+}
 
-// Input processing
-kcp.Input(incomingData);
+[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+private static void MyLogCallback(byte* log, IKCPCB* kcp, void* user)
+{
+    string message = Marshal.PtrToStringUTF8((IntPtr)log);
+    Console.WriteLine($"[KCP] {message}");
+}
 ```

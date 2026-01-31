@@ -3,8 +3,8 @@
 using System.Runtime.InteropServices;
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct IQueueHead
+public unsafe struct IQueueHead
 {
-    internal IQueueHead* next;
-    internal IQueueHead* prev;
+    public IQueueHead* next;
+    public IQueueHead* prev;
 }

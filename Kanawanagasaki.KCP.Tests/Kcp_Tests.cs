@@ -1,39 +1,27 @@
 ﻿namespace Kanawanagasaki.KCP.Tests;
 
-using System.Buffers.Binary;
 using System.Security.Cryptography;
 
 public class Kcp_Tests
 {
     [Fact]
-    public void GetConvFromBytes()
-    {
-        var header = new byte[24];
-        BinaryPrimitives.WriteUInt32LittleEndian(header, 12345u);
-
-        var conv = KcpConversation.GetConvFromBytes(header);
-
-        Assert.Equal(12345u, conv);
-    }
-
-    [Fact]
     public void BasicSendRecvCycle()
     {
         var senderOutputData = new List<byte[]>();
-        var sender = new KcpConversation(12345);
-        sender.SetOutput((data, kcpPtr, userPtr) =>
+        var sender = new KcpManaged(12345);
+        sender.OnOutput = (data) =>
         {
             senderOutputData.Add(data.ToArray());
             return data.Length;
-        });
+        };
 
         var receiverOutputData = new List<byte[]>();
-        var receiver = new KcpConversation(12345);
-        receiver.SetOutput((data, kcpPtr, userPtr) =>
+        var receiver = new KcpManaged(12345);
+        receiver.OnOutput = (data) =>
         {
             receiverOutputData.Add(data.ToArray());
             return data.Length;
-        });
+        };
 
         var sendData = new byte[] { 1, 2, 3, 4, 5 };
         var recvData = new byte[100];
@@ -54,7 +42,7 @@ public class Kcp_Tests
         senderOutputData.Clear();
 
         receiver.Update(2000);
-        var recvResult = receiver.Recv(recvData);
+        var recvResult = receiver.Receive(recvData);
 
         Assert.True(0 < recvResult);
 
@@ -70,21 +58,21 @@ public class Kcp_Tests
     {
         uint time = 1000;
 
-        var kcp1 = new KcpConversation(12345);
-        kcp1.SetWndSize(256, 256);
-        var kcp2 = new KcpConversation(12345);
-        kcp2.SetWndSize(256, 256);
+        var kcp1 = new KcpManaged(12345);
+        kcp1.SetWindowSize(256, 256);
+        var kcp2 = new KcpManaged(12345);
+        kcp2.SetWindowSize(256, 256);
 
-        kcp1.SetOutput((data, kcpPtr, userPtr) =>
+        kcp1.OnOutput = (data) =>
         {
             kcp2.Input(data);
             return data.Length;
-        });
-        kcp2.SetOutput((data, kcpPtr, userPtr) =>
+        };
+        kcp2.OnOutput = (data) =>
         {
             kcp1.Input(data);
             return data.Length;
-        });
+        };
 
         var packets = new List<byte[]>();
         for (int i = 0; i < byte.MaxValue; i++)
@@ -105,7 +93,7 @@ public class Kcp_Tests
         var buffer = new byte[10];
         while (true)
         {
-            var result = kcp2.Recv(buffer);
+            var result = kcp2.Receive(buffer);
             kcp2.Update(time += 1000);
             if (result < 0)
                 break;
@@ -128,13 +116,13 @@ public class Kcp_Tests
     {
         uint time = 1000;
 
-        var kcp1 = new KcpConversation(12345);
-        kcp1.SetWndSize(256, 256);
-        var kcp2 = new KcpConversation(12345);
-        kcp2.SetWndSize(256, 256);
+        var kcp1 = new KcpManaged(12345);
+        kcp1.SetWindowSize(256, 256);
+        var kcp2 = new KcpManaged(12345);
+        kcp2.SetWindowSize(256, 256);
 
         var shuffledPackets1 = new List<byte[]>();
-        kcp1.SetOutput((data, kcpPtr, userPtr) =>
+        kcp1.OnOutput = (data) =>
         {
             if (Random.Shared.NextDouble() <= deliveryChance)
                 kcp2.Input(data);
@@ -151,10 +139,10 @@ public class Kcp_Tests
                 shuffledPackets1.RemoveAt(0);
             }
             return data.Length;
-        });
+        };
 
         var shuffledPackets2 = new List<byte[]>();
-        kcp2.SetOutput((data, kcpPtr, userPtr) =>
+        kcp2.OnOutput = (data) =>
         {
             if (Random.Shared.NextDouble() <= deliveryChance)
                 kcp1.Input(data);
@@ -171,7 +159,7 @@ public class Kcp_Tests
                 shuffledPackets2.RemoveAt(0);
             }
             return data.Length;
-        });
+        };
 
         var packets = new List<byte[]>();
         for (int i = 0; i < 256; i++)
@@ -192,7 +180,7 @@ public class Kcp_Tests
         var buffer = new byte[10];
         for (int i = 0; i < 100_000_000 && received.Count < packets.Count; i++)
         {
-            var result = kcp2.Recv(buffer);
+            var result = kcp2.Receive(buffer);
             kcp1.Update(time += 1000);
             kcp2.Update(time += 1000);
             if (0 < result)
@@ -203,14 +191,5 @@ public class Kcp_Tests
 
         kcp1.Dispose();
         kcp2.Dispose();
-    }
-
-    public static int CompareByteArrayLex(byte[] a, byte[] b)
-    {
-        var n = Math.Min(a.Length, b.Length);
-        for (int i = 0; i < n; i++)
-            if (a[i] != b[i])
-                return a[i].CompareTo(b[i]);
-        return a.Length.CompareTo(b.Length);
     }
 }
