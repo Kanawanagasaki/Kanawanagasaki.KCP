@@ -1,8 +1,6 @@
 ﻿namespace Kanawanagasaki.KCP;
 
 using System.Buffers;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Threading.Channels;
 
 public abstract class KcpTransport : IAsyncDisposable, IDisposable
@@ -24,32 +22,39 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     /// </summary>
     public event Action<string>? OnLogMessage;
 
-    /// <summary>
-    /// Unique conversation ID for this KCP session.
-    /// </summary>
-    public uint ConversationId
-        => _kcp.ConversationId;
-
-    public bool NoDelay
-        => _kcp.NoDelay;
-
-    public uint Interval
-        => _kcp.Interval;
-
-    public uint SendWindow
-        => _kcp.SendWindow;
-
-    public uint ReceiveWindow
-        => _kcp.ReceiveWindow;
-
-    public uint RemoteWindow
-        => _kcp.RemoteWindow;
-
-    public uint Mtu
-        => _kcp.Mtu;
-
-    public bool IsStreamMode
-        => _kcp.IsStreamMode;
+    public uint ConversationId => _kcp.ConversationId;
+    public bool NoDelay => _kcp.NoDelay;
+    public uint Interval => _kcp.Interval;
+    public uint SendWindow => _kcp.SendWindow;
+    public uint ReceiveWindow => _kcp.ReceiveWindow;
+    public uint RemoteWindow => _kcp.RemoteWindow;
+    public uint Mtu => _kcp.Mtu;
+    public uint MaximumSegmentSize => _kcp.MaximumSegmentSize;
+    public bool IsStreamMode => _kcp.IsStreamMode;
+    public uint State => _kcp.State;
+    public bool IsDead => _kcp.IsDead;
+    public uint SendUnacknowledged => _kcp.SendUnacknowledged;
+    public uint SendNext => _kcp.SendNext;
+    public uint ReceiveNext => _kcp.ReceiveNext;
+    public uint SlowStartThreshold => _kcp.SlowStartThreshold;
+    public int RoundTripTimeVariance => _kcp.RoundTripTimeVariance;
+    public int SmoothedRoundTripTime => _kcp.SmoothedRoundTripTime;
+    public int RetransmissionTimeout => _kcp.RetransmissionTimeout;
+    public int MinimumRetransmissionTimeout => _kcp.MinimumRetransmissionTimeout;
+    public uint CongestionWindow => _kcp.CongestionWindow;
+    public uint CurrentTimestamp => _kcp.CurrentTimestamp;
+    public uint NextFlushTimestamp => _kcp.NextFlushTimestamp;
+    public uint RetransmissionCount => _kcp.RetransmissionCount;
+    public uint ReceiveBufferCount => _kcp.ReceiveBufferCount;
+    public uint SendBufferCount => _kcp.SendBufferCount;
+    public uint ReceiveQueueCount => _kcp.ReceiveQueueCount;
+    public uint SendQueueCount => _kcp.SendQueueCount;
+    public bool IsUpdated => _kcp.IsUpdated;
+    public uint DeadLink => _kcp.DeadLink;
+    public uint CongestionWindowIncrement => _kcp.CongestionWindowIncrement;
+    public int FastResend => _kcp.FastResend;
+    public int FastLimit => _kcp.FastLimit;
+    public bool NoCongestionWindow => _kcp.NoCongestionWindow;
 
     /// <summary>
     /// Indicates if the transport is actively processing data.
