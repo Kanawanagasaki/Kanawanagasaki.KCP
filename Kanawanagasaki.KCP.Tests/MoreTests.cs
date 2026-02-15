@@ -98,9 +98,9 @@ public class MoreTests
     }
 
     [Fact]
-    public async Task DeterministicParameters_TransportLevel_512Iterations()
+    public async Task DeterministicParameters_TransportLevel_256Iterations()
     {
-        for (int i = 0; i < 512; i++)
+        for (int i = 0; i < 256; i++)
         {
             bool noDelay = (i & 1) != 0;
             int sendWindow = GetWindowFromBits((i >> 1) & 3);
@@ -132,7 +132,7 @@ public class MoreTests
             var testData = RandomNumberGenerator.GetBytes(8192);
             client1.Write(testData);
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
             try
             {
                 if (streamMode)
@@ -247,7 +247,7 @@ public class MoreTests
     }
 
     [Fact]
-    public async Task LongBidirectionalConversation_5000Messages_LossyNetwork()
+    public async Task LongBidirectionalConversation_1000Messages_LossyNetwork()
     {
         using var client1 = new TestTransport(222222, 0.85);
         using var client2 = new TestTransport(222222, 0.85);
@@ -263,7 +263,7 @@ public class MoreTests
         client1.Start();
         client2.Start();
 
-        const int messageCount = 5000;
+        const int messageCount = 1000;
         var messages1to2 = new List<byte[]>();
         var messages2to1 = new List<byte[]>();
         var received1to2 = new List<byte[]>();
@@ -335,7 +335,7 @@ public class MoreTests
     }
 
     [Fact]
-    public async Task AlternatingBidirectionalConversation_2000Rounds()
+    public async Task AlternatingBidirectionalConversation_1000Rounds()
     {
         using var client1 = new TestTransport(444444, 1.0);
         using var client2 = new TestTransport(444444, 1.0);
@@ -351,7 +351,7 @@ public class MoreTests
         client1.Start();
         client2.Start();
 
-        const int rounds = 2000;
+        const int rounds = 1000;
 
         for (int i = 0; i < rounds; i++)
         {

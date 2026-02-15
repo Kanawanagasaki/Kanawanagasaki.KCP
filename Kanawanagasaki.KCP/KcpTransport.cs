@@ -1,6 +1,7 @@
 ﻿namespace Kanawanagasaki.KCP;
 
 using System.Buffers;
+using System.Diagnostics;
 using System.Threading.Channels;
 
 public abstract class KcpTransport : IAsyncDisposable, IDisposable
@@ -55,6 +56,8 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     public int FastResend => _kcp.FastResend;
     public int FastLimit => _kcp.FastLimit;
     public bool NoCongestionWindow => _kcp.NoCongestionWindow;
+
+    private uint _timestamp = 0;
 
     /// <summary>
     /// Indicates if the transport is actively processing data.
@@ -420,10 +423,29 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     {
         try
         {
-            while (_isRunning && _cts is not null && !_cts.Token.IsCancellationRequested)
+            if (_cts is null)
+                return;
+
+            var ct = _cts.Token;
+            var startTime = Stopwatch.GetTimestamp();
+            var startTimestamp = _timestamp;
+            while (_isRunning && !ct.IsCancellationRequested)
             {
-                await ProcessOnceAsync(_cts.Token);
-                await Task.Delay(Math.Clamp((int)Interval, 10, 1000), _cts.Token).ConfigureAwait(false);
+                var interval = Interval;
+                var expectedTimestamp = startTimestamp + Stopwatch.GetElapsedTime(startTime).TotalMilliseconds;
+
+                int processCount = 0;
+                while (_timestamp < expectedTimestamp && processCount < 16)
+                {
+                    await ProcessOnceAsync(_timestamp, ct);
+                    _timestamp += interval;
+                    processCount++;
+                }
+
+                if (16 <= processCount)
+                    _timestamp = (uint)expectedTimestamp;
+
+                await Task.Delay(Math.Clamp((int)interval, 10, 1000), ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { }
@@ -433,13 +455,10 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         }
     }
 
-    private async Task ProcessOnceAsync(CancellationToken ct)
+    private async Task ProcessOnceAsync(uint timestamp, CancellationToken ct)
     {
         lock (_syncLock)
-        {
-            var timestamp = (uint)Environment.TickCount;
             _kcp.Update(timestamp);
-        }
 
         while (true)
         {
