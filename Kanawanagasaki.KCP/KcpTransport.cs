@@ -10,9 +10,12 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     private readonly Lock _syncLock = new();
 
     private CancellationTokenSource? _cts;
+
+    private Channel<PooledMemory>? _sendChannel;
     private Channel<ReadOnlyMemory<byte>>? _receiveChannel;
 
-    private Task? _processingTask;
+    private Task? _sendLoopTask;
+    private Task? _updateLoopTask;
     private volatile bool _disposed = false;
     private volatile bool _isRunning = false;
 
@@ -82,25 +85,11 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         if (_disposed || _cts?.IsCancellationRequested != false)
             return -1;
 
-        var buffer = ArrayPool<byte>.Shared.Rent(data.Length);
-        data.CopyTo(buffer);
-        var memory = buffer.AsMemory(0, data.Length);
+        var memoryOwner = MemoryPool<byte>.Shared.Rent(data.Length);
+        var pooledMemory = new PooledMemory(memoryOwner, data.Length);
+        data.CopyTo(pooledMemory.Memory.Span);
 
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await SendAsync(memory, _cts?.Token ?? default).ConfigureAwait(false);
-            }
-            catch (Exception e)
-            {
-                OnLogMessage?.Invoke($"Packet send failed: {e.Message}");
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
-        }, _cts?.Token ?? default);
+        _sendChannel?.Writer.TryWrite(pooledMemory);
 
         return data.Length;
     }
@@ -235,13 +224,17 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         _cts?.Dispose();
         _cts = new CancellationTokenSource();
 
+        _sendChannel?.Writer.Complete();
+        _sendChannel = Channel.CreateUnbounded<PooledMemory>();
+
         _receiveChannel?.Writer.Complete();
         _receiveChannel = Channel.CreateBounded<ReadOnlyMemory<byte>>(new BoundedChannelOptions(1000)
         {
             FullMode = BoundedChannelFullMode.Wait
         });
 
-        _processingTask = ProcessAsync();
+        _sendLoopTask = SendLoopAsync();
+        _updateLoopTask = UpdateLoopAsync();
     }
 
     /// <summary>
@@ -258,14 +251,30 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         _cts?.Dispose();
         _cts = null;
 
+        _sendChannel?.Writer?.Complete();
+        _sendChannel = null;
+
         _receiveChannel?.Writer.Complete();
         _receiveChannel = null;
 
-        if (_processingTask is not null)
+        if (_sendLoopTask is not null)
         {
             try
             {
-                await _processingTask.ConfigureAwait(false);
+                await _sendLoopTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception e)
+            {
+                OnLogMessage?.Invoke(e.Message);
+            }
+        }
+
+        if (_updateLoopTask is not null)
+        {
+            try
+            {
+                await _updateLoopTask.ConfigureAwait(false);
             }
             catch (OperationCanceledException) { }
             catch (Exception e)
@@ -419,7 +428,29 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
             _kcp.SetInterval(interval);
     }
 
-    private async Task ProcessAsync()
+    private async Task SendLoopAsync()
+    {
+        try
+        {
+            if (_cts is null)
+                return;
+
+            var ct = _cts.Token;
+            while (_isRunning && !ct.IsCancellationRequested && _sendChannel is not null)
+            {
+                var pooledMemory = await _sendChannel.Reader.ReadAsync(ct);
+                await SendAsync(pooledMemory.Memory, ct);
+                pooledMemory.Dispose();
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception e)
+        {
+            OnLogMessage?.Invoke($"Processing error: {e.Message}");
+        }
+    }
+
+    private async Task UpdateLoopAsync()
     {
         try
         {
@@ -437,7 +468,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
                 int processCount = 0;
                 while (_timestamp < expectedTimestamp && processCount < 16)
                 {
-                    await ProcessOnceAsync(_timestamp, ct);
+                    await UpdateOnceAsync(_timestamp, ct);
                     _timestamp += interval;
                     processCount++;
                 }
@@ -455,7 +486,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         }
     }
 
-    private async Task ProcessOnceAsync(uint timestamp, CancellationToken ct)
+    private async Task UpdateOnceAsync(uint timestamp, CancellationToken ct)
     {
         lock (_syncLock)
             _kcp.Update(timestamp);
@@ -504,9 +535,18 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
         try
         {
-            _processingTask?.Wait(TimeSpan.FromSeconds(5));
+            _sendLoopTask?.Wait(TimeSpan.FromSeconds(5));
         }
         catch (OperationCanceledException) { }
+
+        try
+        {
+            _updateLoopTask?.Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (OperationCanceledException) { }
+
+        _sendChannel?.Writer.Complete();
+        _sendChannel = null;
 
         _receiveChannel?.Writer.Complete();
         _receiveChannel = null;
@@ -530,14 +570,27 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         _cts?.Cancel();
 
         await _stream.DisposeAsync();
-        if (_processingTask != null)
+
+        if (_sendLoopTask != null)
         {
             try
             {
-                await Task.WhenAny(_processingTask, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+                await Task.WhenAny(_sendLoopTask, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
             }
             catch { }
         }
+
+        if (_updateLoopTask != null)
+        {
+            try
+            {
+                await Task.WhenAny(_updateLoopTask, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+            }
+            catch { }
+        }
+
+        _sendChannel?.Writer.Complete();
+        _sendChannel = null;
 
         _receiveChannel?.Writer.Complete();
         _receiveChannel = null;
