@@ -458,6 +458,564 @@ public class KcpTransport_Tests
         await client2.StopAsync();
     }
 
+    [Fact]
+    public async Task Start_MultipleTimes()
+    {
+        using var transport = new TestTransport(10001, 1.0);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        await transport.StopAsync();
+    }
+
+    [Fact]
+    public async Task StopAsync_MultipleTimes()
+    {
+        using var transport = new TestTransport(10002, 1.0);
+        transport.Start();
+
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+    }
+
+    [Fact]
+    public void Dispose_MultipleTimes()
+    {
+        var transport = new TestTransport(10003, 1.0);
+        transport.Start();
+
+        transport.Dispose();
+        transport.Dispose();
+        transport.Dispose();
+    }
+
+    [Fact]
+    public async Task DisposeAsync_MultipleTimes()
+    {
+        var transport = new TestTransport(10004, 1.0);
+        transport.Start();
+
+        await transport.DisposeAsync();
+        await transport.DisposeAsync();
+        await transport.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Start_AfterStop()
+    {
+        using var transport = new TestTransport(10005, 1.0);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        await transport.StopAsync();
+    }
+
+    [Fact]
+    public async Task Start_MultipleTimes_AfterMultipleStops()
+    {
+        using var transport = new TestTransport(10006, 1.0);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+    }
+
+    [Fact]
+    public async Task Stop_WithoutStart()
+    {
+        using var transport = new TestTransport(10007, 1.0);
+
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        await transport.StopAsync();
+        await transport.StopAsync();
+    }
+
+    [Fact]
+    public void Dispose_WithoutStart()
+    {
+        var transport = new TestTransport(10008, 1.0);
+        transport.Dispose();
+    }
+
+    [Fact]
+    public async Task DisposeAsync_WithoutStart()
+    {
+        var transport = new TestTransport(10009, 1.0);
+        await transport.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Dispose_AfterStop()
+    {
+        var transport = new TestTransport(10010, 1.0);
+        transport.Start();
+        await transport.StopAsync();
+        transport.Dispose();
+    }
+
+    [Fact]
+    public async Task Stop_AfterDispose()
+    {
+        var transport = new TestTransport(10011, 1.0);
+        transport.Start();
+        transport.Dispose();
+        await transport.StopAsync();
+    }
+
+    [Fact]
+    public void Start_AfterDispose()
+    {
+        var transport = new TestTransport(10012, 1.0);
+        transport.Start();
+        transport.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() => transport.Start());
+    }
+
+    [Fact]
+    public async Task Start_AfterDisposeAsync()
+    {
+        var transport = new TestTransport(10013, 1.0);
+        transport.Start();
+        await transport.DisposeAsync();
+
+        Assert.Throws<ObjectDisposedException>(() => transport.Start());
+    }
+
+    [Fact]
+    public async Task MixedStartStopDispose()
+    {
+        var transport = new TestTransport(10014, 1.0);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        transport.Dispose();
+        transport.Dispose();
+    }
+
+    [Fact]
+    public async Task MixedStartStopDisposeAsync()
+    {
+        var transport = new TestTransport(10015, 1.0);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        await transport.StopAsync();
+        Assert.False(transport.IsRunning);
+
+        transport.Start();
+        Assert.True(transport.IsRunning);
+
+        await transport.DisposeAsync();
+        await transport.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Communication_AfterStopAndRestart()
+    {
+        var message1 = Encoding.UTF8.GetBytes("First message before stop");
+        var message2 = Encoding.UTF8.GetBytes("Second message after restart");
+
+        using var client1 = new TestTransport(20001, 1.0);
+        using var client2 = new TestTransport(20001, 1.0);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        client1.Write(message1);
+        var received1 = await client2.ReadAsync();
+        Assert.Equal(message1, received1.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+
+        client1.Start();
+        client2.Start();
+
+        client1.Write(message2);
+        var received2 = await client2.ReadAsync();
+        Assert.Equal(message2, received2.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task Communication_AfterMultipleStartStopCycles()
+    {
+        using var client1 = new TestTransport(20002, 1.0);
+        using var client2 = new TestTransport(20002, 1.0);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        for (int cycle = 0; cycle < 5; cycle++)
+        {
+            var message = Encoding.UTF8.GetBytes($"Message cycle {cycle}");
+
+            client1.Start();
+            client2.Start();
+
+            client1.Write(message);
+            var received = await client2.ReadAsync();
+            Assert.Equal(message, received.ToArray());
+
+            await client1.StopAsync();
+            await client2.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Communication_Bidirectional_AfterRestart()
+    {
+        using var client1 = new TestTransport(20003, 1.0);
+        using var client2 = new TestTransport(20003, 1.0);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        var msg1to2 = Encoding.UTF8.GetBytes("Client1 to Client2 - first");
+        var msg2to1 = Encoding.UTF8.GetBytes("Client2 to Client1 - first");
+
+        client1.Write(msg1to2);
+        client2.Write(msg2to1);
+
+        var recv1 = await client2.ReadAsync();
+        var recv2 = await client1.ReadAsync();
+
+        Assert.Equal(msg1to2, recv1.ToArray());
+        Assert.Equal(msg2to1, recv2.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+
+        client1.Start();
+        client2.Start();
+
+        var msg1to2_second = Encoding.UTF8.GetBytes("Client1 to Client2 - second");
+        var msg2to1_second = Encoding.UTF8.GetBytes("Client2 to Client1 - second");
+
+        client1.Write(msg1to2_second);
+        client2.Write(msg2to1_second);
+
+        var recv1_second = await client2.ReadAsync();
+        var recv2_second = await client1.ReadAsync();
+
+        Assert.Equal(msg1to2_second, recv1_second.ToArray());
+        Assert.Equal(msg2to1_second, recv2_second.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task Communication_LargeData_AfterRestart()
+    {
+        var largeData1 = RandomNumberGenerator.GetBytes(10 * 1024);
+        var largeData2 = RandomNumberGenerator.GetBytes(15 * 1024);
+
+        using var client1 = new TestTransport(20004, 1.0);
+        using var client2 = new TestTransport(20004, 1.0);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        client1.Write(largeData1);
+        var received1 = await client2.ReadAsync();
+        Assert.Equal(largeData1, received1.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+
+        client1.Start();
+        client2.Start();
+
+        client1.Write(largeData2);
+        var received2 = await client2.ReadAsync();
+        Assert.Equal(largeData2, received2.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task Communication_MultipleMessages_AfterRestart()
+    {
+        using var client1 = new TestTransport(20005, 1.0);
+        using var client2 = new TestTransport(20005, 1.0);
+
+        client1.SetWindowSize(256, 512);
+        client2.SetWindowSize(256, 512);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        var messages1 = new byte[10][];
+        for (int i = 0; i < messages1.Length; i++)
+            messages1[i] = Encoding.UTF8.GetBytes($"First batch message {i}");
+
+        client1.Start();
+        client2.Start();
+
+        foreach (var msg in messages1)
+            client1.Write(msg);
+
+        for (int i = 0; i < messages1.Length; i++)
+        {
+            var received = await client2.ReadAsync();
+            Assert.Equal(messages1[i], received.ToArray());
+        }
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+
+        var messages2 = new byte[10][];
+        for (int i = 0; i < messages2.Length; i++)
+            messages2[i] = Encoding.UTF8.GetBytes($"Second batch message {i}");
+
+        client1.Start();
+        client2.Start();
+
+        foreach (var msg in messages2)
+            client1.Write(msg);
+
+        for (int i = 0; i < messages2.Length; i++)
+        {
+            var received = await client2.ReadAsync();
+            Assert.Equal(messages2[i], received.ToArray());
+        }
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task Communication_WithLossyNetwork_AfterRestart()
+    {
+        using var client1 = new TestTransport(20006, 0.85);
+        using var client2 = new TestTransport(20006, 0.85);
+
+        client1.SetWindowSize(256, 256);
+        client2.SetWindowSize(256, 256);
+        client1.SetInterval(10);
+        client2.SetInterval(10);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        var message1 = Encoding.UTF8.GetBytes("Lossy network test - first");
+        client1.Write(message1);
+        var received1 = await client2.ReadAsync();
+        Assert.Equal(message1, received1.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+
+        client1.Start();
+        client2.Start();
+
+        var message2 = Encoding.UTF8.GetBytes("Lossy network test - second");
+        client1.Write(message2);
+        var received2 = await client2.ReadAsync();
+        Assert.Equal(message2, received2.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task StreamCommunication_AfterRestart()
+    {
+        using var client1 = new TestTransport(20007, 1.0);
+        using var client2 = new TestTransport(20007, 1.0);
+
+        client1.SetStreamMode(true);
+        client2.SetStreamMode(true);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        var streamData1 = Encoding.UTF8.GetBytes("Stream data - first transfer");
+        var stream1 = client1.GetStream();
+        await stream1.WriteAsync(streamData1);
+
+        var receiveStream1 = client2.GetStream();
+        var buffer1 = new byte[streamData1.Length];
+        await receiveStream1.ReadExactlyAsync(buffer1);
+        Assert.Equal(streamData1, buffer1);
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+
+        client1.Start();
+        client2.Start();
+
+        var streamData2 = Encoding.UTF8.GetBytes("Stream data - second transfer after restart");
+        var stream2 = client1.GetStream();
+        await stream2.WriteAsync(streamData2);
+
+        var receiveStream2 = client2.GetStream();
+        var buffer2 = new byte[streamData2.Length];
+        await receiveStream2.ReadExactlyAsync(buffer2);
+        Assert.Equal(streamData2, buffer2);
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task Communication_DoubleStart()
+    {
+        using var client1 = new TestTransport(20008, 1.0);
+        using var client2 = new TestTransport(20008, 1.0);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client1.Start();
+        client2.Start();
+        client2.Start();
+
+        var message = Encoding.UTF8.GetBytes("Test after double start");
+        client1.Write(message);
+
+        var received = await client2.ReadAsync();
+        Assert.Equal(message, received.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task Communication_DoubleStop_ThenRestart()
+    {
+        using var client1 = new TestTransport(20009, 1.0);
+        using var client2 = new TestTransport(20009, 1.0);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        client1.Start();
+        client2.Start();
+
+        var message1 = Encoding.UTF8.GetBytes("First message");
+        client1.Write(message1);
+        var received1 = await client2.ReadAsync();
+        Assert.Equal(message1, received1.ToArray());
+
+        await client1.StopAsync();
+        await client1.StopAsync();
+        await client2.StopAsync();
+        await client2.StopAsync();
+
+        client1.Start();
+        client2.Start();
+
+        var message2 = Encoding.UTF8.GetBytes("Second message after double stop");
+        client1.Write(message2);
+        var received2 = await client2.ReadAsync();
+        Assert.Equal(message2, received2.ToArray());
+
+        await client1.StopAsync();
+        await client2.StopAsync();
+    }
+
+    [Fact]
+    public async Task Communication_StartStopStart_WithDifferentDataSizes()
+    {
+        using var client1 = new TestTransport(20010, 0.75);
+        using var client2 = new TestTransport(20010, 0.75);
+
+        client1.AnotherTransport = client2;
+        client2.AnotherTransport = client1;
+
+        var dataSizes = new[] { 64, 512, 1024, 4096, 8192 };
+
+        foreach (var size in dataSizes)
+        {
+            client1.Start();
+            client2.Start();
+
+            var data = RandomNumberGenerator.GetBytes(size);
+            client1.Write(data);
+
+            var received = await client2.ReadAsync();
+            Assert.Equal(data, received.ToArray());
+
+            await client1.StopAsync();
+            await client2.StopAsync();
+        }
+    }
+
     public class TestTransport : KcpTransport
     {
         public TestTransport? AnotherTransport { get; set; }
@@ -472,49 +1030,69 @@ public class KcpTransport_Tests
         public TestTransport(uint conv, double successChance) : base(conv)
         {
             _successChance = successChance;
-            _receiveTask = ReceiveAsync();
+            _receiveTask = ReceiveLoopAsync(_cts.Token);
         }
 
-        private async Task ReceiveAsync()
+        private async Task ReceiveLoopAsync(CancellationToken ct)
         {
-            while (!_cts.IsCancellationRequested)
+            try
             {
-                try
+                while (!ct.IsCancellationRequested)
                 {
-                    var buffer = await Channel.Reader.ReadAsync(_cts.Token);
+                    var buffer = await Channel.Reader.ReadAsync(ct);
                     Input(buffer);
                 }
-                catch { }
             }
+            catch (Exception) { }
         }
 
-        protected override async ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+        protected override ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
             if (_successChance <= Random.Shared.NextDouble())
-                return data.Length;
+                return ValueTask.FromResult(0);
 
             if (AnotherTransport is not null)
             {
-                await AnotherTransport.Channel.Writer.WriteAsync(data.ToArray(), ct);
-                return data.Length;
+                AnotherTransport.Channel.Writer.TryWrite(data.ToArray());
+                return ValueTask.FromResult(data.Length);
             }
 
-            return 0;
+            return ValueTask.FromResult(0);
         }
 
-        public override void Dispose()
+        protected override void Dispose(bool disposing)
         {
-            _cts.Cancel();
-            _cts.Dispose();
-            base.Dispose();
+            if (disposing)
+            {
+                if (!_cts.IsCancellationRequested)
+                {
+                    _cts.Cancel();
+                    try
+                    {
+                        _receiveTask.Wait(TimeSpan.FromMilliseconds(500));
+                    }
+                    catch { }
+                    _cts.Dispose();
+                }
+            }
+
+            base.Dispose(disposing);
         }
 
-        public override async ValueTask DisposeAsync()
+        protected override async ValueTask DisposeAsyncCore()
         {
-            _cts.Cancel();
-            _cts.Dispose();
-            await _receiveTask;
-            await base.DisposeAsync();
+            if (!_cts.IsCancellationRequested)
+            {
+                _cts.Cancel();
+                try
+                {
+                    await _receiveTask.ConfigureAwait(false);
+                }
+                catch { }
+                _cts.Dispose();
+            }
+
+            await base.DisposeAsyncCore().ConfigureAwait(false);
         }
     }
 }

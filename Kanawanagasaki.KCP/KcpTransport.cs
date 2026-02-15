@@ -16,7 +16,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
     private Task? _sendLoopTask;
     private Task? _updateLoopTask;
-    private volatile bool _disposed = false;
+    private volatile int _disposeState = 0;
     private volatile bool _isRunning = false;
 
     private KcpConsumerProducerStream _stream;
@@ -62,11 +62,13 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
     private uint _timestamp = 0;
 
+    public bool IsDisposed => _disposeState != 0;
+
     /// <summary>
     /// Indicates if the transport is actively processing data.
     /// Returns false after disposal or explicit stop.
     /// </summary>
-    public bool IsRunning => _isRunning && !_disposed;
+    public bool IsRunning => _isRunning && !IsDisposed;
 
     /// <summary>
     /// Initializes a new KCP transport session.
@@ -82,7 +84,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
     private int OnOutput(ReadOnlySpan<byte> data)
     {
-        if (_disposed || _cts?.IsCancellationRequested != false)
+        if (IsDisposed || _cts?.IsCancellationRequested != false)
             return -1;
 
         var memoryOwner = MemoryPool<byte>.Shared.Rent(data.Length);
@@ -243,7 +245,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     /// <param name="ct">Cancellation token</param>
     public async Task StopAsync(CancellationToken ct = default)
     {
-        if (!_isRunning || _disposed)
+        if (!_isRunning || IsDisposed)
             return;
 
         _isRunning = false;
@@ -518,81 +520,108 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
     private void ThrowIfDisposed()
     {
-        if (_disposed)
+        if (IsDisposed)
             throw new ObjectDisposedException(nameof(KcpTransport));
     }
 
-    public virtual void Dispose()
+    public void Dispose()
     {
-        if (_disposed)
-            return;
-
-        _disposed = true;
-
-        _cts?.Cancel();
-
-        _stream.Dispose();
-
-        try
-        {
-            _sendLoopTask?.Wait(TimeSpan.FromSeconds(5));
-        }
-        catch (OperationCanceledException) { }
-
-        try
-        {
-            _updateLoopTask?.Wait(TimeSpan.FromSeconds(5));
-        }
-        catch (OperationCanceledException) { }
-
-        _sendChannel?.Writer.Complete();
-        _sendChannel = null;
-
-        _receiveChannel?.Writer.Complete();
-        _receiveChannel = null;
-
-        lock (_syncLock)
-            _kcp?.Dispose();
-
-        _cts?.Dispose();
-        _cts = null;
-
+        Dispose(disposing: true);
         GC.SuppressFinalize(this);
     }
 
-    public virtual async ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        await DisposeAsyncCore().ConfigureAwait(false);
+        Dispose(disposing: false);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
             return;
 
-        _disposed = true;
+        _isRunning = false;
 
-        _cts?.Cancel();
+        if (disposing)
+        {
+            if (_cts is not null && !_cts.IsCancellationRequested)
+            {
+                try
+                {
+                    _cts.Cancel();
+                }
+                catch (ObjectDisposedException) { }
+            }
 
-        await _stream.DisposeAsync();
+            try
+            {
+                _sendLoopTask?.Wait(TimeSpan.FromSeconds(2));
+            }
+            catch { }
+            try
+            {
+                _updateLoopTask?.Wait(TimeSpan.FromSeconds(2));
+            }
+            catch { }
 
-        if (_sendLoopTask != null)
+            _stream?.Dispose();
+
+            _sendChannel?.Writer.TryComplete();
+            _receiveChannel?.Writer.TryComplete();
+
+            lock (_syncLock)
+                _kcp?.Dispose();
+
+            _cts?.Dispose();
+        }
+    }
+
+    protected virtual async ValueTask DisposeAsyncCore()
+    {
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+            return;
+
+        _isRunning = false;
+
+        if (_cts is not null && !_cts.IsCancellationRequested)
         {
             try
             {
-                await Task.WhenAny(_sendLoopTask, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+                _cts.Cancel();
+            }
+            catch (ObjectDisposedException) { }
+        }
+
+        var tasks = new List<Task>(2);
+        if (_sendLoopTask is not null)
+            tasks.Add(_sendLoopTask);
+        if (_updateLoopTask is not null)
+            tasks.Add(_updateLoopTask);
+
+        if (0 < tasks.Count)
+        {
+            try
+            {
+                await Task.WhenAny(Task.WhenAll(tasks), Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
             }
             catch { }
         }
 
-        if (_updateLoopTask != null)
+        if (_stream is IAsyncDisposable asyncStream)
         {
-            try
-            {
-                await Task.WhenAny(_updateLoopTask, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
-            }
-            catch { }
+            await asyncStream.DisposeAsync().ConfigureAwait(false);
+        }
+        else
+        {
+            _stream?.Dispose();
         }
 
-        _sendChannel?.Writer.Complete();
+        _sendChannel?.Writer.TryComplete();
         _sendChannel = null;
 
-        _receiveChannel?.Writer.Complete();
+        _receiveChannel?.Writer.TryComplete();
         _receiveChannel = null;
 
         lock (_syncLock)
@@ -600,7 +629,5 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
         _cts?.Dispose();
         _cts = null;
-
-        GC.SuppressFinalize(this);
     }
 }

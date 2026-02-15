@@ -891,28 +891,27 @@ public class PerlinNoiseTests(ITestOutputHelper _output)
         {
             _sendSimulator = sendSimulator;
             _receiveSimulator = receiveSimulator;
-            _receiveTask = ReceiveAsync();
+            _receiveTask = ReceiveLoopAsync(_cts.Token);
         }
 
-        private async Task ReceiveAsync()
+        private async Task ReceiveLoopAsync(CancellationToken ct)
         {
-            while (!_cts.IsCancellationRequested)
+            try
             {
-                try
+                while (!ct.IsCancellationRequested)
                 {
-                    var buffer = await Channel.Reader.ReadAsync(_cts.Token);
+                    var buffer = await Channel.Reader.ReadAsync(ct);
                     Input(buffer);
                     _receiveSimulator.AdvanceTime(1);
                 }
-                catch { }
             }
+            catch (Exception) { }
         }
 
         protected override async ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
             _sendSimulator.AdvanceTime(1);
 
-            // Use Perlin noise to determine if packet should be dropped
             if (_sendSimulator.ShouldDropPacket())
                 return data.Length;
 
@@ -925,19 +924,39 @@ public class PerlinNoiseTests(ITestOutputHelper _output)
             return 0;
         }
 
-        public override void Dispose()
+        protected override void Dispose(bool disposing)
         {
-            _cts.Cancel();
-            _cts.Dispose();
-            base.Dispose();
+            if (disposing)
+            {
+                if (!_cts.IsCancellationRequested)
+                {
+                    _cts.Cancel();
+                    try
+                    {
+                        _receiveTask.Wait(TimeSpan.FromSeconds(1));
+                    }
+                    catch { }
+                    _cts.Dispose();
+                }
+            }
+
+            base.Dispose(disposing);
         }
 
-        public override async ValueTask DisposeAsync()
+        protected override async ValueTask DisposeAsyncCore()
         {
-            _cts.Cancel();
-            _cts.Dispose();
-            await _receiveTask;
-            await base.DisposeAsync();
+            if (!_cts.IsCancellationRequested)
+            {
+                _cts.Cancel();
+                try
+                {
+                    await _receiveTask.ConfigureAwait(false);
+                }
+                catch { }
+                _cts.Dispose();
+            }
+
+            await base.DisposeAsyncCore().ConfigureAwait(false);
         }
     }
 }

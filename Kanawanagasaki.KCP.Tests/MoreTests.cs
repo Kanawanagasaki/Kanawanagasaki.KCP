@@ -2,6 +2,7 @@
 
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading.Channels;
 
 public class MoreTests
 {
@@ -751,8 +752,7 @@ public class MoreTests
 
         private readonly double _successChance;
 
-        public System.Threading.Channels.Channel<byte[]> Channel { get; } =
-            System.Threading.Channels.Channel.CreateUnbounded<byte[]>();
+        public Channel<byte[]> Channel { get; } = System.Threading.Channels.Channel.CreateUnbounded<byte[]>();
 
         private readonly CancellationTokenSource _cts = new();
         private readonly Task _receiveTask;
@@ -760,49 +760,69 @@ public class MoreTests
         public TestTransport(uint conv, double successChance) : base(conv)
         {
             _successChance = successChance;
-            _receiveTask = ReceiveAsync();
+            _receiveTask = ReceiveLoopAsync(_cts.Token);
         }
 
-        private async Task ReceiveAsync()
+        private async Task ReceiveLoopAsync(CancellationToken ct)
         {
-            while (!_cts.IsCancellationRequested)
+            try
             {
-                try
+                while (!ct.IsCancellationRequested)
                 {
-                    var buffer = await Channel.Reader.ReadAsync(_cts.Token);
+                    var buffer = await Channel.Reader.ReadAsync(ct);
                     Input(buffer);
                 }
-                catch { }
             }
+            catch (Exception) { }
         }
 
-        protected override async ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+        protected override ValueTask<int> SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
             if (_successChance <= Random.Shared.NextDouble())
-                return data.Length;
+                return ValueTask.FromResult(0);
 
             if (AnotherTransport is not null)
             {
-                await AnotherTransport.Channel.Writer.WriteAsync(data.ToArray(), ct);
-                return data.Length;
+                AnotherTransport.Channel.Writer.TryWrite(data.ToArray());
+                return ValueTask.FromResult(data.Length);
             }
 
-            return 0;
+            return ValueTask.FromResult(0);
         }
 
-        public override void Dispose()
+        protected override void Dispose(bool disposing)
         {
-            _cts.Cancel();
-            _cts.Dispose();
-            base.Dispose();
+            if (disposing)
+            {
+                if (!_cts.IsCancellationRequested)
+                {
+                    _cts.Cancel();
+                    try
+                    {
+                        _receiveTask.Wait(TimeSpan.FromMilliseconds(500));
+                    }
+                    catch { }
+                    _cts.Dispose();
+                }
+            }
+
+            base.Dispose(disposing);
         }
 
-        public override async ValueTask DisposeAsync()
+        protected override async ValueTask DisposeAsyncCore()
         {
-            _cts.Cancel();
-            _cts.Dispose();
-            await _receiveTask;
-            await base.DisposeAsync();
+            if (!_cts.IsCancellationRequested)
+            {
+                _cts.Cancel();
+                try
+                {
+                    await _receiveTask.ConfigureAwait(false);
+                }
+                catch { }
+                _cts.Dispose();
+            }
+
+            await base.DisposeAsyncCore().ConfigureAwait(false);
         }
     }
 }
