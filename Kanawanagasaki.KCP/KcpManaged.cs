@@ -10,6 +10,8 @@ public unsafe class KcpManaged : IDisposable
     private GCHandle _gcHandle;
     private bool _disposed;
 
+    private static int _poolInstalled;
+
     public delegate int OutputCallback(ReadOnlySpan<byte> data);
 
     /// <summary>
@@ -31,6 +33,8 @@ public unsafe class KcpManaged : IDisposable
     /// <exception cref="InvalidOperationException">Thrown when native KCP instance creation fails.</exception>
     public KcpManaged(uint conversationId)
     {
+        EnsurePoolInstalled();
+
         _gcHandle = GCHandle.Alloc(this);
         _kcp = KCP.ikcp_create(conversationId, (void*)GCHandle.ToIntPtr(_gcHandle));
 
@@ -519,6 +523,14 @@ public unsafe class KcpManaged : IDisposable
     {
         ThrowIfDisposed();
         return KCP.ikcp_waitsnd(_kcp);
+    }
+
+    private static void EnsurePoolInstalled()
+    {
+        if (Interlocked.CompareExchange(ref _poolInstalled, 1, 0) == 0)
+        {
+            KcpMemoryPool.Install();
+        }
     }
 
     private void ThrowIfDisposed()
