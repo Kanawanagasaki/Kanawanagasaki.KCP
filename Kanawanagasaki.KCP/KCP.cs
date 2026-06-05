@@ -276,6 +276,7 @@ public static unsafe class KCP
         kcp->acklist = null;
         kcp->ackblock = 0;
         kcp->ackcount = 0;
+        kcp->ackedlen = 0;
         kcp->rx_srtt = 0;
         kcp->rx_rttval = 0;
         kcp->rx_rto = (int)KcpConstants.IKCP_RTO_DEF;
@@ -293,6 +294,8 @@ public static unsafe class KCP
         kcp->xmit = 0;
         kcp->dead_link = KcpConstants.IKCP_DEADLINK;
         kcp->output = null;
+        kcp->ccops = null;
+        kcp->congest = null;
         kcp->writelog = null;
 
         return kcp;
@@ -303,6 +306,12 @@ public static unsafe class KCP
         if (kcp == null) return;
 
         IKCPSEG* seg;
+
+        if (kcp->ccops != null && kcp->ccops->release != null)
+        {
+            kcp->ccops->release(kcp);
+        }
+
         while (!iqueue_is_empty(&kcp->snd_buf))
         {
             seg = iqueue_entry(kcp->snd_buf.next);
@@ -546,6 +555,10 @@ public static unsafe class KCP
         }
         rto = kcp->rx_srtt + (int)_imax_(kcp->interval, (uint)(4 * kcp->rx_rttval));
         kcp->rx_rto = (int)_ibound_((uint)kcp->rx_minrto, (uint)rto, KcpConstants.IKCP_RTO_MAX);
+        if (kcp->ccops != null && kcp->ccops->on_rtt != null)
+        {
+            kcp->ccops->on_rtt(kcp, rtt);
+        }
     }
 
     private static void ikcp_shrink_buf(IKCPCB* kcp)
@@ -565,6 +578,7 @@ public static unsafe class KCP
     private static void ikcp_parse_ack(IKCPCB* kcp, uint sn)
     {
         IQueueHead* p, next;
+        int pkt_rtt;
 
         if (_itimediff(sn, kcp->snd_una) < 0 || _itimediff(sn, kcp->snd_nxt) >= 0)
             return;
@@ -575,6 +589,16 @@ public static unsafe class KCP
             next = p->next;
             if (sn == seg->sn)
             {
+                kcp->ackedlen += seg->len;
+                if (kcp->ccops != null && kcp->ccops->on_pkt_acked != null)
+                {
+                    pkt_rtt = -1;
+                    if (_itimediff(kcp->current, seg->ts) >= 0)
+                    {
+                        pkt_rtt = _itimediff(kcp->current, seg->ts);
+                    }
+                    kcp->ccops->on_pkt_acked(kcp, seg->sn, seg->ts, seg->len, pkt_rtt, seg->xmit);
+                }
                 iqueue_del(p);
                 ikcp_segment_delete(kcp, seg);
                 kcp->nsnd_buf--;
@@ -596,6 +620,11 @@ public static unsafe class KCP
             next = p->next;
             if (_itimediff(una, seg->sn) > 0)
             {
+                kcp->ackedlen += seg->len;
+                if (kcp->ccops != null && kcp->ccops->on_pkt_acked != null)
+                {
+                    kcp->ccops->on_pkt_acked(kcp, seg->sn, seg->ts, seg->len, -1, seg->xmit);
+                }
                 iqueue_del(p);
                 ikcp_segment_delete(kcp, seg);
                 kcp->nsnd_buf--;
@@ -735,8 +764,12 @@ public static unsafe class KCP
     public static int ikcp_input(IKCPCB* kcp, byte* data, int size)
     {
         uint prev_una = kcp->snd_una;
+        uint prev_nsnd_buf = kcp->nsnd_buf;
+        uint acked_segs, prior_in_flight;
         uint maxack = 0, latest_ts = 0;
         int flag = 0;
+
+        kcp->ackedlen = 0;
 
         if (ikcp_canlog(kcp, KcpConstants.IKCP_LOG_INPUT) != 0)
         {
@@ -767,7 +800,7 @@ public static unsafe class KCP
 
             size -= (int)KcpConstants.IKCP_OVERHEAD;
 
-            if ((long)size < (long)len) return -2;
+            if ((long)size < (long)len || (int)len < 0) return -2;
 
             if (cmd != KcpConstants.IKCP_CMD_PUSH && cmd != KcpConstants.IKCP_CMD_ACK &&
                 cmd != KcpConstants.IKCP_CMD_WASK && cmd != KcpConstants.IKCP_CMD_WINS)
@@ -869,27 +902,36 @@ public static unsafe class KCP
 
         if (_itimediff(kcp->snd_una, prev_una) > 0)
         {
-            if (kcp->cwnd < kcp->rmt_wnd)
+            acked_segs = kcp->snd_una - prev_una;
+            prior_in_flight = prev_nsnd_buf;
+            if (kcp->ccops != null && kcp->ccops->on_ack != null)
             {
-                uint mss = kcp->mss;
-                if (kcp->cwnd < kcp->ssthresh)
+                kcp->ccops->on_ack(kcp, acked_segs, kcp->ackedlen, prior_in_flight);
+            }
+            else
+            {
+                if (kcp->cwnd < kcp->rmt_wnd)
                 {
-                    kcp->cwnd++;
-                    kcp->incr += mss;
-                }
-                else
-                {
-                    if (kcp->incr < mss) kcp->incr = mss;
-                    kcp->incr += (mss * mss) / kcp->incr + (mss / 16);
-                    if ((kcp->cwnd + 1) * mss <= kcp->incr)
+                    uint mss = kcp->mss;
+                    if (kcp->cwnd < kcp->ssthresh)
                     {
-                        kcp->cwnd = (kcp->incr + mss - 1) / ((mss > 0) ? mss : 1);
+                        kcp->cwnd++;
+                        kcp->incr += mss;
                     }
-                }
-                if (kcp->cwnd > kcp->rmt_wnd)
-                {
-                    kcp->cwnd = kcp->rmt_wnd;
-                    kcp->incr = kcp->rmt_wnd * mss;
+                    else
+                    {
+                        if (kcp->incr < mss) kcp->incr = mss;
+                        kcp->incr += (mss * mss) / kcp->incr + (mss / 16);
+                        if ((kcp->cwnd + 1) * mss <= kcp->incr)
+                        {
+                            kcp->cwnd = (kcp->incr + mss - 1) / ((mss > 0) ? mss : 1);
+                        }
+                    }
+                    if (kcp->cwnd > kcp->rmt_wnd)
+                    {
+                        kcp->cwnd = kcp->rmt_wnd;
+                        kcp->incr = kcp->rmt_wnd * mss;
+                    }
                 }
             }
         }
@@ -927,12 +969,27 @@ public static unsafe class KCP
         int count, size, i;
         uint resent, cwnd;
         uint rtomin;
+        uint prior_cwnd;
+        uint eff_cwnd, cur_inflight;
+        int pacing_budget = -1;
         IQueueHead* p;
         int change = 0;
         int lost = 0;
         IKCPSEG seg;
 
         if (kcp->updated == 0) return;
+
+        if (kcp->ccops != null && kcp->ccops->on_tick != null)
+        {
+            kcp->ccops->on_tick(kcp);
+        }
+
+        if (kcp->ccops != null && kcp->ccops->pacing_rate != null)
+        {
+            pacing_budget = (int)kcp->ccops->pacing_rate(kcp);
+        }
+
+        prior_cwnd = kcp->cwnd;
 
         seg.conv = kcp->conv;
         seg.cmd = KcpConstants.IKCP_CMD_ACK;
@@ -1012,7 +1069,7 @@ public static unsafe class KCP
         kcp->probe = 0;
 
         cwnd = _imin_(kcp->snd_wnd, kcp->rmt_wnd);
-        if (kcp->nocwnd == 0) cwnd = _imin_(kcp->cwnd, cwnd);
+        if (kcp->ccops != null || kcp->nocwnd == 0) cwnd = _imin_(kcp->cwnd, cwnd);
 
         while (_itimediff(kcp->snd_nxt, kcp->snd_una + cwnd) < 0)
         {
@@ -1036,6 +1093,20 @@ public static unsafe class KCP
             newseg->rto = (uint)kcp->rx_rto;
             newseg->fastack = 0;
             newseg->xmit = 0;
+        }
+
+        if (kcp->ccops != null && kcp->ccops->on_app_limited != null)
+        {
+            if (iqueue_is_empty(&kcp->snd_queue))
+            {
+                eff_cwnd = _imin_(kcp->snd_wnd, kcp->rmt_wnd);
+                eff_cwnd = _imin_(kcp->cwnd, eff_cwnd);
+                cur_inflight = kcp->nsnd_buf;
+                if (cur_inflight < eff_cwnd)
+                {
+                    kcp->ccops->on_app_limited(kcp, cur_inflight);
+                }
+            }
         }
 
         resent = (kcp->fastresend > 0) ? (uint)kcp->fastresend : 0xffffffff;
@@ -1089,6 +1160,17 @@ public static unsafe class KCP
                 segment->wnd = seg.wnd;
                 segment->una = kcp->rcv_nxt;
 
+                if (pacing_budget >= 0 && pacing_budget < (int)segment->len)
+                {
+                    break;
+                }
+
+                if (kcp->ccops != null && kcp->ccops->on_pkt_sent != null)
+                {
+                    kcp->ccops->on_pkt_sent(kcp, segment->sn, current,
+                            segment->len, kcp->nsnd_buf, segment->xmit);
+                }
+
                 size = (int)(ptr - buffer);
                 need = (int)(KcpConstants.IKCP_OVERHEAD + segment->len);
 
@@ -1106,6 +1188,11 @@ public static unsafe class KCP
                     ptr += (int)segment->len;
                 }
 
+                if (pacing_budget >= 0)
+                {
+                    pacing_budget -= (int)segment->len;
+                }
+
                 if (segment->xmit >= kcp->dead_link)
                 {
                     kcp->state = unchecked((uint)-1);
@@ -1121,21 +1208,35 @@ public static unsafe class KCP
 
         if (change != 0)
         {
-            uint inflight = kcp->snd_nxt - kcp->snd_una;
-            kcp->ssthresh = inflight / 2;
-            if (kcp->ssthresh < KcpConstants.IKCP_THRESH_MIN)
-                kcp->ssthresh = KcpConstants.IKCP_THRESH_MIN;
-            kcp->cwnd = kcp->ssthresh + resent;
-            kcp->incr = kcp->cwnd * kcp->mss;
+            if (kcp->ccops != null && kcp->ccops->on_fast_retransmit != null)
+            {
+                kcp->ccops->on_fast_retransmit(kcp, (uint)change, kcp->nsnd_buf, prior_cwnd);
+            }
+            else
+            {
+                uint inflight = kcp->snd_nxt - kcp->snd_una;
+                kcp->ssthresh = inflight / 2;
+                if (kcp->ssthresh < KcpConstants.IKCP_THRESH_MIN)
+                    kcp->ssthresh = KcpConstants.IKCP_THRESH_MIN;
+                kcp->cwnd = kcp->ssthresh + resent;
+                kcp->incr = kcp->cwnd * kcp->mss;
+            }
         }
 
         if (lost != 0)
         {
-            kcp->ssthresh = cwnd / 2;
-            if (kcp->ssthresh < KcpConstants.IKCP_THRESH_MIN)
-                kcp->ssthresh = KcpConstants.IKCP_THRESH_MIN;
-            kcp->cwnd = 1;
-            kcp->incr = kcp->mss;
+            if (kcp->ccops != null && kcp->ccops->on_timeout != null)
+            {
+                kcp->ccops->on_timeout(kcp, prior_cwnd);
+            }
+            else
+            {
+                kcp->ssthresh = prior_cwnd / 2;
+                if (kcp->ssthresh < KcpConstants.IKCP_THRESH_MIN)
+                    kcp->ssthresh = KcpConstants.IKCP_THRESH_MIN;
+                kcp->cwnd = 1;
+                kcp->incr = kcp->mss;
+            }
         }
 
         if (kcp->cwnd < 1)
@@ -1214,7 +1315,7 @@ public static unsafe class KCP
         }
 
         minimal = (uint)(tm_packet < tm_flush ? tm_packet : tm_flush);
-        if (minimal >= (int)kcp->interval) minimal = kcp->interval;
+        if (minimal >= kcp->interval) minimal = kcp->interval;
 
         return current + minimal;
     }
@@ -1299,5 +1400,37 @@ public static unsafe class KCP
         uint conv;
         ikcp_decode32u((byte*)ptr, &conv);
         return conv;
+    }
+
+    public static int ikcp_setcc(IKCPCB* kcp, IKCPOPS* ops)
+    {
+        if (kcp == null) return -1;
+        if (kcp->ccops != null && kcp->ccops->release != null)
+        {
+            kcp->ccops->release(kcp);
+        }
+        kcp->congest = null;
+        kcp->ccops = ops;
+        if (ops != null)
+        {
+            if (ops->init != null)
+            {
+                if (ops->init(kcp) < 0)
+                {
+                    kcp->ccops = null;
+                    kcp->congest = null;
+                    if (kcp->cwnd < 1) kcp->cwnd = 1;
+                    kcp->incr = kcp->cwnd * kcp->mss;
+                    return -1;
+                }
+            }
+        }
+        else
+        {
+            if (kcp->cwnd < 1) kcp->cwnd = 1;
+            kcp->incr = kcp->cwnd * kcp->mss;
+            if (kcp->incr < kcp->mss) kcp->incr = kcp->mss;
+        }
+        return 0;
     }
 }

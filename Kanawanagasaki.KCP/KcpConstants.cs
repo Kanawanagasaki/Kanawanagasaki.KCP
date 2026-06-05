@@ -21,7 +21,7 @@ public static class KcpConstants
     public const uint IKCP_DEADLINK = 20;
     public const uint IKCP_THRESH_INIT = 2;
     public const uint IKCP_THRESH_MIN = 2;
-    public const uint IKCP_PROBE_INIT = 7000;
+    public const uint IKCP_PROBE_INIT = 5000;
     public const uint IKCP_PROBE_LIMIT = 120000;
     public const uint IKCP_FASTACK_LIMIT = 5;
 

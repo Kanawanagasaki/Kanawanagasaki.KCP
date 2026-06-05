@@ -23,11 +23,14 @@ public unsafe struct IKCPCB
     public uint* acklist;
     public uint ackcount;
     public uint ackblock;
+    public uint ackedlen;
     public void* user;
     public byte* buffer;
     public int fastresend;
     public int fastlimit;
     public int nocwnd, stream;
+    public IKCPOPS* ccops;
+    public void* congest;
     public int logmask;
     public delegate* unmanaged[Cdecl]<byte*, int, IKCPCB*, void*, int> output;
     public delegate* unmanaged[Cdecl]<byte*, IKCPCB*, void*, void> writelog;
