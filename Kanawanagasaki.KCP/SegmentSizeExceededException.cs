@@ -3,7 +3,7 @@
 using System;
 
 [Serializable]
-internal class SegmentSizeExceededException : Exception
+public class SegmentSizeExceededException : Exception
 {
     internal SegmentSizeExceededException()
     {

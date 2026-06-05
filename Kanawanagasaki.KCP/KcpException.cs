@@ -3,7 +3,7 @@
 using System;
 
 [Serializable]
-internal class KcpException : Exception
+public class KcpException : Exception
 {
     public KcpException()
     {

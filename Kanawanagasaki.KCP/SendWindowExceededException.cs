@@ -3,7 +3,7 @@
 using System;
 
 [Serializable]
-internal class SendWindowExceededException : Exception
+public class SendWindowExceededException : Exception
 {
     internal SendWindowExceededException()
     {
