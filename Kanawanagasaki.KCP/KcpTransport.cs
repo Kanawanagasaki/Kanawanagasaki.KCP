@@ -21,6 +21,10 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
     private KcpConsumerProducerStream _stream;
 
+    private List<PooledMemory> _pendingOutput = [];
+
+    private readonly SemaphoreSlim _sendWindowSignal = new(0, 1);
+
     /// <summary>
     /// Raised when internal KCP events generate log messages.
     /// </summary>
@@ -91,9 +95,63 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         var pooledMemory = new PooledMemory(memoryOwner, data.Length);
         data.CopyTo(pooledMemory.Memory.Span);
 
-        _sendChannel?.Writer.TryWrite(pooledMemory);
+        _pendingOutput.Add(pooledMemory);
 
         return data.Length;
+    }
+
+    private void DrainPendingOutput()
+    {
+        List<PooledMemory> toDrain;
+        lock (_syncLock)
+        {
+            if (_pendingOutput.Count == 0)
+                return;
+            toDrain = _pendingOutput;
+            _pendingOutput = [];
+        }
+
+        var channel = _sendChannel;
+        if (channel is not null)
+        {
+            foreach (var item in toDrain)
+            {
+                if (!channel.Writer.TryWrite(item))
+                    item.Dispose();
+            }
+        }
+        else
+        {
+            foreach (var item in toDrain)
+                item.Dispose();
+        }
+    }
+
+    internal async ValueTask WaitForSendWindowAsync(CancellationToken ct)
+    {
+        if (!_isRunning || IsDisposed)
+            return;
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(100));
+            await _sendWindowSignal.WaitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private void SignalWindowChange()
+    {
+        if (_sendWindowSignal.CurrentCount == 0)
+        {
+            try
+            {
+                _sendWindowSignal.Release();
+            }
+            catch { }
+        }
     }
 
     /// <summary>
@@ -124,6 +182,8 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
             if (result < 0)
                 throw new KcpException("Operation failed with error code: " + result);
         }
+
+        SignalWindowChange();
     }
 
     /// <summary>
@@ -220,6 +280,10 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
             if (_isRunning)
                 return;
             _isRunning = true;
+
+            foreach (var item in _pendingOutput)
+                item.Dispose();
+            _pendingOutput.Clear();
         }
 
         _cts?.Cancel();
@@ -227,7 +291,13 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         _cts = new CancellationTokenSource();
 
         _sendChannel?.Writer.Complete();
-        _sendChannel = Channel.CreateUnbounded<PooledMemory>();
+        
+        _sendChannel = Channel.CreateBounded<PooledMemory>(new BoundedChannelOptions(8192)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = false
+        });
 
         _receiveChannel?.Writer.Complete();
         _receiveChannel = Channel.CreateBounded<ReadOnlyMemory<byte>>(new BoundedChannelOptions(1000)
@@ -295,6 +365,8 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
         lock (_syncLock)
             _kcp.Flush();
+
+        DrainPendingOutput();
     }
 
     /// <summary>
@@ -490,30 +562,65 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
     private async Task UpdateOnceAsync(uint timestamp, CancellationToken ct)
     {
+        List<PooledMemory>? outputToDrain = null;
+        List<(byte[] buffer, int length)>? receivedMessages = null;
+        bool isStreamMode;
+
         lock (_syncLock)
+        {
             _kcp.Update(timestamp);
 
-        while (true)
-        {
-            int packetSize;
-            byte[] buffer;
-            int received;
-
-            lock (_syncLock)
+            if (0 < _pendingOutput.Count)
             {
-                packetSize = _kcp.PeekSize();
-                if (packetSize <= 0)
-                    break;
-                buffer = new byte[packetSize];
-                received = _kcp.Receive(buffer);
+                outputToDrain = _pendingOutput;
+                _pendingOutput = [];
             }
 
-            if (0 < received)
+            isStreamMode = _kcp.IsStreamMode;
+            int packetSize = _kcp.PeekSize();
+
+            if (0 < packetSize)
             {
-                if (_kcp.IsStreamMode)
-                    await _stream.WriteReceivedDataAsync(buffer.AsMemory(0, received), ct);
+                receivedMessages = [];
+                while (0 < packetSize)
+                {
+                    var buffer = new byte[packetSize];
+                    int received = _kcp.Receive(buffer);
+
+                    if (0 < received)
+                        receivedMessages.Add((buffer, received));
+
+                    packetSize = _kcp.PeekSize();
+                }
+            }
+        }
+
+        if (outputToDrain is not null)
+        {
+            var channel = _sendChannel;
+            if (channel is not null)
+            {
+                foreach (var item in outputToDrain)
+                {
+                    if (!channel.Writer.TryWrite(item))
+                        item.Dispose();
+                }
+            }
+            else
+            {
+                foreach (var item in outputToDrain)
+                    item.Dispose();
+            }
+        }
+
+        if (receivedMessages is not null)
+        {
+            foreach (var (buffer, length) in receivedMessages)
+            {
+                if (isStreamMode)
+                    await _stream.WriteReceivedDataAsync(buffer.AsMemory(0, length), ct);
                 else
-                    _receiveChannel?.Writer.TryWrite(buffer.AsMemory(0, received));
+                    _receiveChannel?.Writer.TryWrite(buffer.AsMemory(0, length));
             }
         }
     }
@@ -572,8 +679,14 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
             _receiveChannel?.Writer.TryComplete();
 
             lock (_syncLock)
+            {
+                foreach (var item in _pendingOutput)
+                    item.Dispose();
+                _pendingOutput.Clear();
                 _kcp?.Dispose();
+            }
 
+            _sendWindowSignal.Dispose();
             _cts?.Dispose();
         }
     }
@@ -625,8 +738,14 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         _receiveChannel = null;
 
         lock (_syncLock)
+        {
+            foreach (var item in _pendingOutput)
+                item.Dispose();
+            _pendingOutput.Clear();
             _kcp?.Dispose();
+        }
 
+        _sendWindowSignal.Dispose();
         _cts?.Dispose();
         _cts = null;
     }

@@ -51,7 +51,7 @@ public class KcpConsumerProducerStream : Stream
             if (threeQuarters <= _transport.GetWaitSnd())
             {
                 _transport.Flush();
-                await Task.Delay(10, ct);
+                await _transport.WaitForSendWindowAsync(ct);
             }
             else
             {

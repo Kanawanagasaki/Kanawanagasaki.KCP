@@ -537,8 +537,8 @@ public class PerlinNoiseTests(ITestOutputHelper _output)
     {
         const int dataSize = 2 * 1024 * 1024;
 
-        var simulator1to2 = new PerlinNetworkSimulator(seed: 111, baseDropRate: 0.10f, variationAmplitude: 0.08f);
-        var simulator2to1 = new PerlinNetworkSimulator(seed: 222, baseDropRate: 0.10f, variationAmplitude: 0.08f);
+        var simulator1to2 = new PerlinNetworkSimulator(seed: 111, baseDropRate: 0.12f, variationAmplitude: 0.08f);
+        var simulator2to1 = new PerlinNetworkSimulator(seed: 222, baseDropRate: 0.12f, variationAmplitude: 0.08f);
 
         var data1to2 = RandomNumberGenerator.GetBytes(dataSize);
         var data2to1 = RandomNumberGenerator.GetBytes(dataSize);
@@ -726,7 +726,7 @@ public class PerlinNoiseTests(ITestOutputHelper _output)
         _output.WriteLine($"Total packets: {simulator1to2.TotalPackets + simulator2to1.TotalPackets}");
         _output.WriteLine($"Total dropped: {simulator1to2.DroppedPackets + simulator2to1.DroppedPackets}");
         _output.WriteLine($"Overall drop rate: {(simulator1to2.TotalPackets + simulator2to1.TotalPackets > 0 ? (double)(simulator1to2.DroppedPackets + simulator2to1.DroppedPackets) / (simulator1to2.TotalPackets + simulator2to1.TotalPackets) * 100 : 0):F2}%");
-
+        
         Assert.Equal(data1to2, buffer2);
         Assert.Equal(data2to1, buffer1);
 

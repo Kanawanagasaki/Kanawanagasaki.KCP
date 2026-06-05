@@ -1134,8 +1134,8 @@ public static unsafe class KCP
                 }
                 else
                 {
-                    uint step = (uint)((kcp->nodelay < 2) ? segment->rto : (uint)kcp->rx_rto);
-                    segment->rto += step / 2;
+                    int step = (kcp->nodelay < 2) ? (int)segment->rto : kcp->rx_rto;
+                    segment->rto += (uint)(step / 2);
                 }
                 segment->resendts = current + segment->rto;
                 lost = 1;
