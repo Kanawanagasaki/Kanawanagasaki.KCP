@@ -1,28 +1,61 @@
-﻿namespace Kanawanagasaki.KCP;
+namespace Kanawanagasaki.KCP;
 
 using System.Buffers;
 
-internal sealed class PooledMemory : IDisposable
+public sealed class PooledMemory : IDisposable
 {
-    private readonly IMemoryOwner<byte> _memoryOwner;
-    private bool _disposed = false;
+    private byte[]? _array;
+    private int _length;
+    private bool _disposed;
 
-    internal Memory<byte> Memory { get; private set; }
+    internal Span<byte> Span
+        => _array.AsSpan(0, _length);
 
-    internal PooledMemory(IMemoryOwner<byte> memoryOwner, int size)
+    internal ReadOnlyMemory<byte> Memory
+        => _array.AsMemory(0, _length);
+
+    internal PooledMemory(ReadOnlySpan<byte> data)
     {
-        _memoryOwner = memoryOwner ?? throw new ArgumentNullException(nameof(memoryOwner));
-        Memory = memoryOwner.Memory.Slice(0, size);
+        _array = ArrayPool<byte>.Shared.Rent(data.Length);
+        _length = data.Length;
+        data.CopyTo(_array);
+    }
+
+    internal PooledMemory(int size)
+    {
+        _array = ArrayPool<byte>.Shared.Rent(size);
+        _length = size;
+    }
+
+    internal void SetLength(int length)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (_array is null)
+            _array = ArrayPool<byte>.Shared.Rent(length);
+        else if (_array.Length < length)
+        {
+            var newArr = ArrayPool<byte>.Shared.Rent(length);
+            _array.AsSpan(0, _length).CopyTo(newArr);
+            ArrayPool<byte>.Shared.Return(_array);
+            _array = newArr;
+        }
+
+        _length = length;
     }
 
     public void Dispose()
     {
-        if (!_disposed)
+        if (_disposed)
+            return;
+
+        if (_array is not null)
         {
-            _memoryOwner.Dispose();
-            Memory = default;
-            _disposed = true;
+            ArrayPool<byte>.Shared.Return(_array);
+            _array = null;
         }
-        GC.SuppressFinalize(this);
+
+        _length = 0;
+        _disposed = true;
     }
 }

@@ -1,6 +1,5 @@
 ﻿namespace Kanawanagasaki.KCP;
 
-using System.Buffers;
 using System.Diagnostics;
 using System.Threading.Channels;
 
@@ -91,9 +90,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
         if (IsDisposed || _cts?.IsCancellationRequested != false)
             return -1;
 
-        var memoryOwner = MemoryPool<byte>.Shared.Rent(data.Length);
-        var pooledMemory = new PooledMemory(memoryOwner, data.Length);
-        data.CopyTo(pooledMemory.Memory.Span);
+        var pooledMemory = new PooledMemory(data);
 
         _pendingOutput.Add(pooledMemory);
 
@@ -564,6 +561,7 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
     {
         List<PooledMemory>? outputToDrain = null;
         List<(byte[] buffer, int length)>? receivedMessages = null;
+        List<PooledMemory>? streamMessages = null;
         bool isStreamMode;
 
         lock (_syncLock)
@@ -581,16 +579,40 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
 
             if (0 < packetSize)
             {
-                receivedMessages = [];
-                while (0 < packetSize)
+                if (isStreamMode)
                 {
-                    var buffer = new byte[packetSize];
-                    int received = _kcp.Receive(buffer);
+                    streamMessages = [];
+                    while (0 < packetSize)
+                    {
+                        var pooled = new PooledMemory(packetSize);
+                        int received = _kcp.Receive(pooled.Span);
 
-                    if (0 < received)
-                        receivedMessages.Add((buffer, received));
+                        if (0 < received)
+                        {
+                            pooled.SetLength(received);
+                            streamMessages.Add(pooled);
+                        }
+                        else
+                        {
+                            pooled.Dispose();
+                        }
 
-                    packetSize = _kcp.PeekSize();
+                        packetSize = _kcp.PeekSize();
+                    }
+                }
+                else
+                {
+                    receivedMessages = [];
+                    while (0 < packetSize)
+                    {
+                        var buffer = new byte[packetSize];
+                        int received = _kcp.Receive(buffer);
+
+                        if (0 < received)
+                            receivedMessages.Add((buffer, received));
+
+                        packetSize = _kcp.PeekSize();
+                    }
                 }
             }
         }
@@ -613,14 +635,19 @@ public abstract class KcpTransport : IAsyncDisposable, IDisposable
             }
         }
 
+        if (streamMessages is not null)
+        {
+            foreach (var pooled in streamMessages)
+            {
+                await _stream.WriteReceivedDataAsync(pooled, ct);
+            }
+        }
+
         if (receivedMessages is not null)
         {
             foreach (var (buffer, length) in receivedMessages)
             {
-                if (isStreamMode)
-                    await _stream.WriteReceivedDataAsync(buffer.AsMemory(0, length), ct);
-                else
-                    _receiveChannel?.Writer.TryWrite(buffer.AsMemory(0, length));
+                _receiveChannel?.Writer.TryWrite(buffer.AsMemory(0, length));
             }
         }
     }

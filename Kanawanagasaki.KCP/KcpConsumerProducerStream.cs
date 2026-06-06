@@ -1,4 +1,4 @@
-﻿namespace Kanawanagasaki.KCP;
+namespace Kanawanagasaki.KCP;
 
 using System.Buffers;
 using System.Threading.Channels;
@@ -6,10 +6,9 @@ using System.Threading.Channels;
 public class KcpConsumerProducerStream : Stream
 {
     private readonly KcpTransport _transport;
-    private readonly Channel<ReadOnlyMemory<byte>> _receiveChannel;
-    private byte[]? _currentBuffer;
-    private int _currentBufferOffset;
-    private int _currentBufferRentedLength;
+    private readonly Channel<PooledMemory> _receiveChannel;
+    private PooledMemory? _currentPooled;
+    private int _currentPooledOffset;
     private bool _isDisposed;
     private readonly Lock _syncLock = new();
 
@@ -27,13 +26,16 @@ public class KcpConsumerProducerStream : Stream
     public KcpConsumerProducerStream(KcpTransport transport)
     {
         _transport = transport;
-        _receiveChannel = Channel.CreateBounded<ReadOnlyMemory<byte>>(_channelOptions);
+        _receiveChannel = Channel.CreateBounded<PooledMemory>(_channelOptions);
     }
 
-    internal async ValueTask WriteReceivedDataAsync(ReadOnlyMemory<byte> data, CancellationToken ct)
+    internal async ValueTask WriteReceivedDataAsync(PooledMemory data, CancellationToken ct)
     {
-        if (_isDisposed || data.IsEmpty)
+        if (_isDisposed || data.Memory.IsEmpty)
+        {
+            data.Dispose();
             return;
+        }
 
         await _receiveChannel.Writer.WriteAsync(data, ct).ConfigureAwait(false);
     }
@@ -81,22 +83,20 @@ public class KcpConsumerProducerStream : Stream
 
         lock (_syncLock)
         {
-            if (_currentBuffer is not null)
+            if (_currentPooled is not null)
             {
-                int available = _currentBufferRentedLength - _currentBufferOffset;
+                int available = _currentPooled.Memory.Length - _currentPooledOffset;
                 int toCopy = Math.Min(available, buffer.Length);
-                _currentBuffer.AsSpan(_currentBufferOffset, toCopy).CopyTo(buffer.Span);
-                _currentBufferOffset += toCopy;
-
-                if (_currentBufferRentedLength <= _currentBufferOffset)
-                {
-                    ArrayPool<byte>.Shared.Return(_currentBuffer);
-                    _currentBuffer = null;
-                    _currentBufferOffset = 0;
-                    _currentBufferRentedLength = 0;
-                }
-
+                _currentPooled.Memory.Span.Slice(_currentPooledOffset, toCopy).CopyTo(buffer.Span);
+                _currentPooledOffset += toCopy;
                 bytesRead = toCopy;
+
+                if (_currentPooled.Memory.Length <= _currentPooledOffset)
+                {
+                    _currentPooled.Dispose();
+                    _currentPooled = null;
+                    _currentPooledOffset = 0;
+                }
             }
         }
 
@@ -105,42 +105,31 @@ public class KcpConsumerProducerStream : Stream
 
         while (bytesRead < buffer.Length)
         {
-            if (_receiveChannel.Reader.TryRead(out var bufferItem))
+            if (_receiveChannel.Reader.TryRead(out var pooledItem))
             {
-                int toCopy = Math.Min(bufferItem.Length, buffer.Length - bytesRead);
+                int toCopy = Math.Min(pooledItem.Memory.Length, buffer.Length - bytesRead);
 
-                if (toCopy == bufferItem.Length)
+                if (toCopy == pooledItem.Memory.Length)
                 {
-                    bufferItem.Span.CopyTo(buffer.Span.Slice(bytesRead));
+                    pooledItem.Memory.Span.CopyTo(buffer.Span.Slice(bytesRead));
                     bytesRead += toCopy;
+                    pooledItem.Dispose();
                 }
                 else
                 {
-                    bufferItem.Span.Slice(0, toCopy).CopyTo(buffer.Span.Slice(bytesRead));
+                    pooledItem.Memory.Span.Slice(0, toCopy).CopyTo(buffer.Span.Slice(bytesRead));
                     bytesRead += toCopy;
 
-                    int excessLength = bufferItem.Length - toCopy;
-                    byte[]? tempBuffer = null;
-                    try
+                    lock (_syncLock)
                     {
-                        lock (_syncLock)
+                        if (_isDisposed)
                         {
-                            if (_isDisposed)
-                                break;
-
-                            tempBuffer = ArrayPool<byte>.Shared.Rent(excessLength);
-                            bufferItem.Span.Slice(toCopy).CopyTo(tempBuffer);
-
-                            _currentBuffer = tempBuffer;
-                            _currentBufferOffset = 0;
-                            _currentBufferRentedLength = excessLength;
-                            tempBuffer = null;
+                            pooledItem.Dispose();
+                            break;
                         }
-                    }
-                    finally
-                    {
-                        if (tempBuffer is not null)
-                            ArrayPool<byte>.Shared.Return(tempBuffer);
+
+                        _currentPooled = pooledItem;
+                        _currentPooledOffset = toCopy;
                     }
                 }
             }
@@ -165,7 +154,7 @@ public class KcpConsumerProducerStream : Stream
 
         count = Math.Min(count, buffer.Length);
 
-        if(_transport.GetFreeSendWindowBytes() < count)
+        if (_transport.GetFreeSendWindowBytes() < count)
             throw new SendWindowExceededException("Write failed, send window is full");
 
         var span = buffer.AsMemory(offset, count);
@@ -208,11 +197,14 @@ public class KcpConsumerProducerStream : Stream
             }
             catch { }
 
-            if (_currentBuffer is not null)
+            while (_receiveChannel.Reader.TryRead(out var item))
+                item.Dispose();
+
+            if (_currentPooled is not null)
             {
-                ArrayPool<byte>.Shared.Return(_currentBuffer);
-                _currentBuffer = null;
-                _currentBufferOffset = 0;
+                _currentPooled.Dispose();
+                _currentPooled = null;
+                _currentPooledOffset = 0;
             }
         }
 
@@ -234,11 +226,14 @@ public class KcpConsumerProducerStream : Stream
             }
             catch { }
 
-            if (_currentBuffer is not null)
+            while (_receiveChannel.Reader.TryRead(out var item))
+                item.Dispose();
+
+            if (_currentPooled is not null)
             {
-                ArrayPool<byte>.Shared.Return(_currentBuffer);
-                _currentBuffer = null;
-                _currentBufferOffset = 0;
+                _currentPooled.Dispose();
+                _currentPooled = null;
+                _currentPooledOffset = 0;
             }
         }
 

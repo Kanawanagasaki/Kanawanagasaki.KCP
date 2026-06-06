@@ -1,12 +1,13 @@
 namespace Kanawanagasaki.KCP.Sample;
 
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using Kanawanagasaki.KCP;
 
 public class UdpKcpTransport : KcpTransport
 {
-    private readonly UdpClient _udp;
+    private readonly Socket _socket;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _receiveLoop;
     private long _bytesSent;
@@ -24,7 +25,7 @@ public class UdpKcpTransport : KcpTransport
 
     public UdpKcpTransport(UdpClient udp, IPEndPoint localEndpoint, IPEndPoint remoteEndpoint, uint conversationId) : base(conversationId)
     {
-        _udp = udp;
+        _socket = udp.Client;
         LocalEndpoint = localEndpoint;
         RemoteEndpoint = remoteEndpoint;
         _receiveLoop = ReceiveLoop(_cts.Token);
@@ -34,12 +35,30 @@ public class UdpKcpTransport : KcpTransport
     {
         try
         {
+            var endpoint = (EndPoint)RemoteEndpoint;
             while (!ct.IsCancellationRequested)
             {
-                var result = await _udp.ReceiveAsync(ct);
-                Interlocked.Add(ref _bytesReceived, result.Buffer.Length);
-                Interlocked.Increment(ref _packetsReceived);
-                Input(result.Buffer);
+                var buffer = ArrayPool<byte>.Shared.Rent(65535);
+                int received;
+                try
+                {
+                    var result = await _socket.ReceiveFromAsync(buffer, SocketFlags.None, endpoint, ct);
+                    received = result.ReceivedBytes;
+                }
+                catch
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                    throw;
+                }
+
+                if (0 < received)
+                {
+                    Interlocked.Add(ref _bytesReceived, received);
+                    Interlocked.Increment(ref _packetsReceived);
+                    Input(buffer.AsSpan(0, received).ToArray());
+                }
+
+                ArrayPool<byte>.Shared.Return(buffer);
             }
         }
         catch (OperationCanceledException) { }
@@ -51,7 +70,7 @@ public class UdpKcpTransport : KcpTransport
     {
         try
         {
-            var sent = await _udp.SendAsync(data, RemoteEndpoint, ct);
+            var sent = await _socket.SendToAsync(data, SocketFlags.None, RemoteEndpoint, ct);
             Interlocked.Add(ref _bytesSent, sent);
             Interlocked.Increment(ref _packetsSent);
             return sent;
@@ -74,7 +93,7 @@ public class UdpKcpTransport : KcpTransport
             catch { }
             _cts.Dispose();
         }
-        _udp.Close();
+        _socket.Close();
         base.Dispose(disposing);
     }
 
@@ -90,7 +109,7 @@ public class UdpKcpTransport : KcpTransport
             catch { }
             _cts.Dispose();
         }
-        _udp.Close();
+        _socket.Close();
         await base.DisposeAsyncCore();
     }
 }

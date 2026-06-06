@@ -194,8 +194,9 @@ public class MoreTests
         {
             foreach (var msg in messages1to2)
             {
+                while (client1.GetFreeSendWindowBytes() < msg.Length)
+                    await Task.Delay(15);
                 client1.Write(msg);
-                await Task.Delay(1);
             }
         });
 
@@ -203,8 +204,9 @@ public class MoreTests
         {
             foreach (var msg in messages2to1)
             {
+                while (client2.GetFreeSendWindowBytes() < msg.Length)
+                    await Task.Delay(15);
                 client2.Write(msg);
-                await Task.Delay(1);
             }
         });
 
@@ -280,8 +282,9 @@ public class MoreTests
         {
             foreach (var msg in messages1to2)
             {
+                while (client1.GetFreeSendWindowBytes() < msg.Length)
+                    await Task.Delay(15);
                 client1.Write(msg);
-                await Task.Delay(1);
             }
         });
 
@@ -289,8 +292,9 @@ public class MoreTests
         {
             foreach (var msg in messages2to1)
             {
+                while (client2.GetFreeSendWindowBytes() < msg.Length)
+                    await Task.Delay(15);
                 client2.Write(msg);
-                await Task.Delay(1);
             }
         });
 
