@@ -246,7 +246,7 @@ public class Concurrency_Tests
 
         await Task.WhenAll(sendTasks);
 
-        Assert.True(successCount > 0, $"Expected some sends to succeed, but got {successCount}");
+        Assert.True(0 < successCount, $"Expected some sends to succeed, but got {successCount}");
 
         var received = new List<byte[]>();
         using var recvCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));

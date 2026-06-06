@@ -60,7 +60,7 @@ public class Memory_Tests
             {
                 int toSend = (int)Math.Min(mss, totalBytes - bytesSent);
                 var sendResult = sender.Send(sendData.AsSpan(0, toSend));
-                if (sendResult > 0)
+                if (0 < sendResult)
                     bytesSent += sendResult;
             }
 

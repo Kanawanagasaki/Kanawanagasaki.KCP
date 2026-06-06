@@ -54,7 +54,6 @@ public static class AppUi
         ("/send", "Send text message", "/send <text>"),
         ("/hex", "Send hex data", "/hex <hex>"),
         ("/random", "Send random bytes", "/random <size>"),
-        ("/flood", "Flood messages", "/flood <count> <size>"),
         ("/stream", "Stream data", "/stream <size>"),
         ("/flush", "Flush KCP buffer", "/flush"),
         ("/nodelay", "Set nodelay params", "/nodelay <0|1> <interval> <fastResend> <noCwnd:0|1>"),
@@ -85,7 +84,6 @@ public static class AppUi
 
             _application.AddTimeout(TimeSpan.FromMilliseconds(500), () =>
             {
-                _session?.UpdateSpeed();
                 RefreshStats();
                 FlushPendingLogs();
                 return true;
@@ -100,7 +98,7 @@ public static class AppUi
             await _session.StopAsync();
     }
 
-    #region Layout
+
 
     private static void OnScreenChanged(object? sender, EventArgs<Rectangle> e)
     {
@@ -296,9 +294,7 @@ public static class AppUi
         BuildCommandInput(Pos.Bottom(logFrame));
     }
 
-    #endregion
 
-    #region Config Panel
 
     private static void BuildConfigPanel(View container)
     {
@@ -417,9 +413,7 @@ public static class AppUi
         container.Add(applyCommBtn);
     }
 
-    #endregion
 
-    #region Command Input
 
     private static void BuildCommandInput(Window window, Pos topPos)
     {
@@ -460,10 +454,6 @@ public static class AppUi
         BuildCommandInput(_window, topPos);
     }
 
-    #endregion
-
-    #region Command Hints
-
     private static void UpdateCommandHint(string currentText)
     {
         if (_hintLabel is null) return;
@@ -499,8 +489,6 @@ public static class AppUi
         _hintLabel.Text = string.Join("  ", matches.Select(m => m.Command));
     }
 
-    #endregion
-
     private static void BuildStatusBar()
     {
         if (_window is null) return;
@@ -521,128 +509,6 @@ public static class AppUi
 
         _window.Add(statusBar);
     }
-
-    #region Settings Apply
-
-    private static void ApplyNetworkSettings()
-    {
-        _session?.Config.LocalIp = GetTextFieldValue(_fieldLocalIp, _session?.Config.LocalIp ?? "0.0.0.0");
-        _session?.Config.LocalPort = GetTextFieldInt(_fieldLocalPort, _session?.Config.LocalPort ?? 10001);
-        _session?.Config.RemoteIp = GetTextFieldValue(_fieldRemoteIp, _session?.Config.RemoteIp ?? "127.0.0.1");
-        _session?.Config.RemotePort = GetTextFieldInt(_fieldRemotePort, _session?.Config.RemotePort ?? 10002);
-        _session?.Config.ConversationId = GetTextFieldUint(_fieldConversationId, _session?.Config.ConversationId ?? 1);
-
-        Log($"Network: {_session?.Config.LocalIp}:{_session?.Config.LocalPort} -> {_session?.Config.RemoteIp}:{_session?.Config.RemotePort} conv={_session?.Config.ConversationId}");
-    }
-
-    private static void ApplyKcpSettings()
-    {
-        _session?.Config.NoDelay = IsCheckBoxChecked(_checkNoDelay);
-        _session?.Config.IntervalMs = GetTextFieldInt(_fieldInterval, _session?.Config.IntervalMs ?? 100);
-        _session?.Config.FastResend = GetTextFieldInt(_fieldFastResend, _session?.Config.FastResend ?? 0);
-        _session?.Config.NoCongestionControl = IsCheckBoxChecked(_checkNoCongestion);
-        _session?.Config.SendWindow = GetTextFieldInt(_fieldSendWindow, _session?.Config.SendWindow ?? 128);
-        _session?.Config.ReceiveWindow = GetTextFieldInt(_fieldReceiveWindow, _session?.Config.ReceiveWindow ?? 256);
-        _session?.Config.Mtu = GetTextFieldInt(_fieldMtu, _session?.Config.Mtu ?? 1400);
-        _session?.Config.StreamMode = IsCheckBoxChecked(_checkStreamMode);
-
-        if (_session?.Transport is not null && _session.IsRunning)
-        {
-            try
-            {
-                _session.ApplyConfig();
-                Log("KCP settings applied LIVE");
-            }
-            catch (Exception ex)
-            {
-                Log($"Live apply error: {ex.Message}");
-            }
-        }
-        else
-        {
-            Log("KCP settings saved");
-        }
-    }
-
-    private static async Task ApplyCommunicationSettingsAsync()
-    {
-        try
-        {
-            _session?.Config.BufferSize = GetTextFieldInt(_fieldBufferSize, _session?.Config.BufferSize ?? 4096);
-            _session?.Config.Direction = _directionSelector?.Value ?? _session?.Config.Direction ?? KcpConfig.ECommunicationDirection.Bidirectional;
-
-            if (_session is not null && _session.IsRunning)
-                await _session.RestartReceiveLoopAsync();
-
-            Log($"Comm: Dir={_session?.Config.Direction}, Buf={_session?.Config.BufferSize}, Stream={_session?.Config.StreamMode}");
-        }
-        catch (Exception ex)
-        {
-            Log($"ApplyCommunicationSettingsAsync FAILED: {ex.Message}");
-        }
-    }
-
-    private static void SyncUiFromConfig()
-    {
-        _fieldLocalIp?.Text = _session?.Config.LocalIp ?? string.Empty;
-        _fieldLocalPort?.Text = _session?.Config.LocalPort.ToString() ?? string.Empty;
-        _fieldRemoteIp?.Text = _session?.Config.RemoteIp ?? string.Empty;
-        _fieldRemotePort?.Text = _session?.Config.RemotePort.ToString() ?? string.Empty;
-        _fieldConversationId?.Text = _session?.Config.ConversationId.ToString() ?? string.Empty;
-
-        _checkNoDelay?.Value = _session?.Config.NoDelay == true ? CheckState.Checked : CheckState.UnChecked;
-        _fieldInterval?.Text = _session?.Config.IntervalMs.ToString() ?? string.Empty;
-        _fieldFastResend?.Text = _session?.Config.FastResend.ToString() ?? string.Empty;
-        _checkNoCongestion?.Value = _session?.Config.NoCongestionControl == true ? CheckState.Checked : CheckState.UnChecked;
-        _fieldSendWindow?.Text = _session?.Config.SendWindow.ToString() ?? string.Empty;
-        _fieldReceiveWindow?.Text = _session?.Config.ReceiveWindow.ToString() ?? string.Empty;
-        _fieldMtu?.Text = _session?.Config.Mtu.ToString() ?? string.Empty;
-        _checkStreamMode?.Value = _session?.Config.StreamMode == true ? CheckState.Checked : CheckState.UnChecked;
-
-        _fieldBufferSize?.Text = _session?.Config.BufferSize.ToString() ?? string.Empty;
-        _directionSelector?.Value = _session?.Config.Direction;
-    }
-
-    #endregion
-
-    #region Transport Start/Stop
-
-    private static async Task OnStartTransportAsync()
-    {
-        try
-        {
-            if (_session is null)
-                return;
-
-            ApplyNetworkSettings();
-            ApplyKcpSettings();
-
-            _session.ApplyConfig();
-
-            await _session.StartAsync();
-        }
-        catch (Exception ex)
-        {
-            Log($"START FAILED: {ex.Message}");
-        }
-    }
-
-    private static async Task OnStopTransportAsync()
-    {
-        try
-        {
-            if (_session is not null)
-                await _session.StopAsync();
-        }
-        catch (Exception ex)
-        {
-            Log($"STOP FAILED: {ex.Message}");
-        }
-    }
-
-    #endregion
-
-    #region Command Processing
 
     private static async Task OnCommandInputAsync()
     {
@@ -699,16 +565,6 @@ public static class AppUi
                     Random.Shared.NextBytes(randomData);
                     if (_session is not null)
                         await _session.SendBinaryAsync(randomData);
-                    break;
-
-                case "/flood":
-                    if (parts.Length < 3 || !int.TryParse(parts[1], out var floodCount) || !int.TryParse(parts[2], out var floodSize))
-                    {
-                        Log("Usage: /flood <count> <size>");
-                        break;
-                    }
-                    if (_session is not null)
-                        await _session.FloodAsync(floodCount, floodSize);
                     break;
 
                 case "/stream":
@@ -833,9 +689,123 @@ public static class AppUi
         }
     }
 
-    #endregion
 
-    #region Log & Stats
+
+    private static void ApplyNetworkSettings()
+    {
+        _session?.Config.LocalIp = GetTextFieldValue(_fieldLocalIp, _session?.Config.LocalIp ?? "0.0.0.0");
+        _session?.Config.LocalPort = GetTextFieldInt(_fieldLocalPort, _session?.Config.LocalPort ?? 10001);
+        _session?.Config.RemoteIp = GetTextFieldValue(_fieldRemoteIp, _session?.Config.RemoteIp ?? "127.0.0.1");
+        _session?.Config.RemotePort = GetTextFieldInt(_fieldRemotePort, _session?.Config.RemotePort ?? 10002);
+        _session?.Config.ConversationId = GetTextFieldUint(_fieldConversationId, _session?.Config.ConversationId ?? 1);
+
+        Log($"Network: {_session?.Config.LocalIp}:{_session?.Config.LocalPort} -> {_session?.Config.RemoteIp}:{_session?.Config.RemotePort} conv={_session?.Config.ConversationId}");
+    }
+
+    private static void ApplyKcpSettings()
+    {
+        _session?.Config.NoDelay = IsCheckBoxChecked(_checkNoDelay);
+        _session?.Config.IntervalMs = GetTextFieldInt(_fieldInterval, _session?.Config.IntervalMs ?? 100);
+        _session?.Config.FastResend = GetTextFieldInt(_fieldFastResend, _session?.Config.FastResend ?? 0);
+        _session?.Config.NoCongestionControl = IsCheckBoxChecked(_checkNoCongestion);
+        _session?.Config.SendWindow = GetTextFieldInt(_fieldSendWindow, _session?.Config.SendWindow ?? 128);
+        _session?.Config.ReceiveWindow = GetTextFieldInt(_fieldReceiveWindow, _session?.Config.ReceiveWindow ?? 256);
+        _session?.Config.Mtu = GetTextFieldInt(_fieldMtu, _session?.Config.Mtu ?? 1400);
+        _session?.Config.StreamMode = IsCheckBoxChecked(_checkStreamMode);
+
+        if (_session?.Transport is not null && _session.IsRunning)
+        {
+            try
+            {
+                _session.ApplyConfig();
+                Log("KCP settings applied LIVE");
+            }
+            catch (Exception ex)
+            {
+                Log($"Live apply error: {ex.Message}");
+            }
+        }
+        else
+        {
+            Log("KCP settings saved");
+        }
+    }
+
+    private static async Task ApplyCommunicationSettingsAsync()
+    {
+        try
+        {
+            _session?.Config.BufferSize = GetTextFieldInt(_fieldBufferSize, _session?.Config.BufferSize ?? 4096);
+            _session?.Config.Direction = _directionSelector?.Value ?? _session?.Config.Direction ?? KcpConfig.ECommunicationDirection.Bidirectional;
+
+            if (_session is not null && _session.IsRunning)
+                await _session.RestartReceiveLoopAsync();
+
+            Log($"Comm: Dir={_session?.Config.Direction}, Buf={_session?.Config.BufferSize}, Stream={_session?.Config.StreamMode}");
+        }
+        catch (Exception ex)
+        {
+            Log($"ApplyCommunicationSettingsAsync FAILED: {ex.Message}");
+        }
+    }
+
+    private static void SyncUiFromConfig()
+    {
+        _fieldLocalIp?.Text = _session?.Config.LocalIp ?? string.Empty;
+        _fieldLocalPort?.Text = _session?.Config.LocalPort.ToString() ?? string.Empty;
+        _fieldRemoteIp?.Text = _session?.Config.RemoteIp ?? string.Empty;
+        _fieldRemotePort?.Text = _session?.Config.RemotePort.ToString() ?? string.Empty;
+        _fieldConversationId?.Text = _session?.Config.ConversationId.ToString() ?? string.Empty;
+
+        _checkNoDelay?.Value = _session?.Config.NoDelay == true ? CheckState.Checked : CheckState.UnChecked;
+        _fieldInterval?.Text = _session?.Config.IntervalMs.ToString() ?? string.Empty;
+        _fieldFastResend?.Text = _session?.Config.FastResend.ToString() ?? string.Empty;
+        _checkNoCongestion?.Value = _session?.Config.NoCongestionControl == true ? CheckState.Checked : CheckState.UnChecked;
+        _fieldSendWindow?.Text = _session?.Config.SendWindow.ToString() ?? string.Empty;
+        _fieldReceiveWindow?.Text = _session?.Config.ReceiveWindow.ToString() ?? string.Empty;
+        _fieldMtu?.Text = _session?.Config.Mtu.ToString() ?? string.Empty;
+        _checkStreamMode?.Value = _session?.Config.StreamMode == true ? CheckState.Checked : CheckState.UnChecked;
+
+        _fieldBufferSize?.Text = _session?.Config.BufferSize.ToString() ?? string.Empty;
+        _directionSelector?.Value = _session?.Config.Direction;
+    }
+
+
+
+    private static async Task OnStartTransportAsync()
+    {
+        try
+        {
+            if (_session is null)
+                return;
+
+            ApplyNetworkSettings();
+            ApplyKcpSettings();
+
+            _session.ApplyConfig();
+
+            await _session.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            Log($"START FAILED: {ex.Message}");
+        }
+    }
+
+    private static async Task OnStopTransportAsync()
+    {
+        try
+        {
+            if (_session is not null)
+                await _session.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log($"STOP FAILED: {ex.Message}");
+        }
+    }
+
+
 
     private static void Log(string message)
     {
@@ -894,9 +864,7 @@ public static class AppUi
         _application?.Invoke(() => _statsLabel.Text = statsText);
     }
 
-    #endregion
 
-    #region UI Helpers
 
     private static Label CreateLabel(string text, int x, object y)
         => new()
@@ -927,6 +895,4 @@ public static class AppUi
 
     private static bool IsCheckBoxChecked(CheckBox? checkBox)
         => checkBox?.Value == CheckState.Checked;
-
-    #endregion
 }

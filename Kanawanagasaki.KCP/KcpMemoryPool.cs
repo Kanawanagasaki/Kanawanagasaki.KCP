@@ -107,7 +107,7 @@ public static unsafe class KcpMemoryPool
 
         var hdr = (nuint*)mem;
         hdr[0] = allocSize;
-        hdr[1] = (nuint)(bucket >= 0 ? bucket : 0xFFFF);
+        hdr[1] = (nuint)(0 <= bucket ? bucket : 0xFFFF);
 
         return (byte*)mem + HeaderSize;
     }
